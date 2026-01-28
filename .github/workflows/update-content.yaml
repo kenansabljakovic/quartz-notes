@@ -1,0 +1,24 @@
+name: Update Content Submodule
+
+on:
+  repository_dispatch:
+    types: [content-update]
+  workflow_dispatch:
+
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update submodule to latest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git submodule update --remote content
+          git add content
+          git diff --staged --quiet || git commit -m "Update content submodule"
+          git push
