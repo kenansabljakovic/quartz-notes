@@ -8,16 +8,14 @@ import * as Plugin from "./quartz/plugins"
  */
 const config: QuartzConfig = {
   configuration: {
-    pageTitle: "Quartz 4",
-    pageTitleSuffix: "",
+    pageTitle: "Kenan's Second Brain",
+    pageTitleSuffix: " | Notes",
     enableSPA: true,
     enablePopovers: true,
-    analytics: {
-      provider: "plausible",
-    },
+    analytics: null,
     locale: "en-US",
-    baseUrl: "quartz.jzhao.xyz",
-    ignorePatterns: ["private", "templates", ".obsidian"],
+    baseUrl: "notes.keon.ba",
+    ignorePatterns: ["private", "templates", ".obsidian", ".git", ".gitkeep"],
     defaultDateType: "modified",
     theme: {
       fontOrigin: "googleFonts",
