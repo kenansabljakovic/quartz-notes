@@ -1,20 +1,12 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-# Install git for submodule support
-RUN apk add --no-cache git
-
 # Copy package files first for better caching
 COPY package*.json ./
 RUN npm ci
 
-# Copy all source files
+# Copy all source files (content is synced via GitHub Actions)
 COPY . .
-
-# Initialize submodules (content from second-brain)
-RUN git config --global --add safe.directory /app
-RUN git config --global --add safe.directory /app/content
-RUN git submodule update --init --recursive
 
 # Build Quartz static site
 RUN npx quartz build

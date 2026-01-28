@@ -1,24 +1,36 @@
-name: Update Content Submodule
+name: Sync Content and Deploy
 
 on:
   repository_dispatch:
     types: [content-update]
   workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
-  update-submodule:
+  sync-and-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout quartz-notes
+        uses: actions/checkout@v4
 
-      - name: Update submodule to latest
+      - name: Checkout second-brain content
+        uses: actions/checkout@v4
+        with:
+          repository: kenansabljakovic/second-brain
+          token: ${{ secrets.CONTENT_PAT }}
+          path: content-source
+
+      - name: Sync content
+        run: |
+          rm -rf content/*
+          cp -r content-source/* content/
+          rm -rf content/.git content/.github
+
+      - name: Commit content changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git submodule update --remote content
           git add content
-          git diff --staged --quiet || git commit -m "Update content submodule"
+          git diff --staged --quiet || git commit -m "Sync content from second-brain"
           git push
