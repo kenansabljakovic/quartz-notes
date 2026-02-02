@@ -2317,5 +2317,875 @@ Prati `/uomback/suicapture/ordnum` response koji sadrži sačuvane `model` i `ou
 
 ---
 
-*Ažurirano: 2026-02-01*
-*Sekcija: Od URL-a do Komponente - Detaljna Analiza*
+---
+
+# SEKCIJA B: PRAKTIČNI VODIČ - Kako Komponenta Radi (Sa Stvarnim Podacima)
+
+Ova sekcija objašnjava kako `evidencija-usluge.component.ts` radi korak po korak, koristeći stvarne podatke iz console.log testiranja. Napisana je za junior programere koji žele razumjeti kompletan tok podataka.
+
+---
+
+## B1. Šta je Ova Komponenta?
+
+`VpnEvidencijaUslugeComponent` (file: `evidencija-usluge.component.ts`) je Angular komponenta koja:
+
+1. **Prikazuje dinamičku formu** - Forma se ne "hardkodira" u HTML, već se generiše iz JSON-a koji dolazi sa backend-a
+2. **Upravlja "korpom" (basket)** - Korpa je kontejner koji drži sve stavke koje korisnik naručuje
+3. **Spašava stanje forme** - Kroz `suicapture` mehanizam, forma se može sačuvati i vratiti kasnije
+
+### Analogija za Razumijevanje
+
+Zamisli da je ova komponenta kao **košarica za kupovinu u online shopu**:
+- `basket` = sama košarica (ima svoj ID, status, datum)
+- `db.model` = proizvodi koje si stavio u košaricu (vrijednosti forme)
+- `db.output` = strukturirani podaci za slanje na kasu (za backend)
+- `suicapture` = "sačuvaj košaricu za kasnije" funkcionalnost
+
+---
+
+## B2. Životni Ciklus Komponente - Vizualni Prikaz
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                        ŽIVOTNI CIKLUS KOMPONENTE                                    │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  1. UČITAVANJE STRANICE                                                             │
+│     │                                                                               │
+│     ▼                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  ngOnInit()                                                                 │    │
+│  │  ├── Pročitaj URL parametre (offerId, specId, processId)                    │    │
+│  │  ├── Pročitaj Query parametre (caId, baId, basketnum)                       │    │
+│  │  ├── Učitaj podatke o korisniku (ca, ba, sa, contact)                       │    │
+│  │  └── Pozovi getDynamic() za učitavanje forme                                │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│     │                                                                               │
+│     ▼                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  getDynamic()                                                               │    │
+│  │  ├── API poziv: GET /pcrt/order-entry                                       │    │
+│  │  ├── Prima JSON strukturu forme                                             │    │
+│  │  ├── Sprema u this.structure                                                │    │
+│  │  └── db.params se popunjava sa parametrima                                  │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│     │                                                                               │
+│     ▼                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  FORMA SE RENDERUJE                                                         │    │
+│  │  ├── z-pageloader iterira kroz JSON                                         │    │
+│  │  ├── z-contentloader renderuje svaki element                                │    │
+│  │  └── Korisnik popunjava polja                                               │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│     │                                                                               │
+│     ▼                                                                               │
+│  2. KORISNIK KLIKNE "SNIMI"                                                         │
+│     │                                                                               │
+│     ▼                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  save()                                                                     │    │
+│  │  ├── Provjeri: Da li basket postoji?                                        │    │
+│  │  │   ├── NE → saveBasket() bez callback-a (PRVI SAVE)                       │    │
+│  │  │   └── DA → saveBasket('saveItem') (DRUGI SAVE)                           │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│     │                                                                               │
+│     ├── PRVI SAVE ──────────────────────────────────────────────────┐              │
+│     │                                                                │              │
+│     ▼                                                                ▼              │
+│  ┌────────────────────────────────┐    ┌────────────────────────────────────────┐  │
+│  │  saveBasket() [PRVI]           │    │  saveBasket() [DRUGI]                  │  │
+│  │  ├── firstsave = true          │    │  ├── firstsave = false                 │  │
+│  │  ├── Kreira novi basket        │    │  ├── Ažurira postojeći basket          │  │
+│  │  ├── assignObjects() - RESET!  │    │  ├── NE poziva assignObjects()         │  │
+│  │  │   └── db.model = {auto:{}}  │    │  ├── db.model OSTAJE popunjen          │  │
+│  │  └── saveSuicapture()          │    │  └── saveSuicapture()                  │  │
+│  │      └── model je PRAZAN       │    │      └── model IMA podatke             │  │
+│  └────────────────────────────────┘    └────────────────────────────────────────┘  │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## B3. KORAK 1: ngOnInit() - Inicijalizacija
+
+Kada se komponenta učita, `ngOnInit()` se automatski poziva. Ovo je kao "priprema radnog stola" prije nego što počneš raditi.
+
+### Stvarni Console.log Podaci:
+
+```
+=== ngOnInit START ===
+Query Params: {
+  processGroupCode: 'RESIDENTIAL_SALES',
+  orderTypeName: 'Osnovne usluge',
+  caId: '130025794',
+  baId: '330021716'
+}
+Route Params: {type: 'residential', offerId: '1174', specId: '162', activeIndex: '0'}
+basketnum: undefined
+ordnum: undefined
+=== ngOnInit END ===
+```
+
+### Objašnjenje Svakog Podatka:
+
+| Podatak | Vrijednost | Šta Znači |
+|---------|------------|-----------|
+| `processGroupCode` | `RESIDENTIAL_SALES` | Tip procesa - prodaja za rezidencijalne korisnike |
+| `orderTypeName` | `Osnovne usluge` | Naziv tipa narudžbe |
+| `caId` | `130025794` | ID Customer Account-a (korisnika) |
+| `baId` | `330021716` | ID Billing Account-a (računa za naplatu) |
+| `type` | `residential` | Tip ponude iz URL-a |
+| `offerId` | `1174` | ID ponude (ProductOffer) |
+| `specId` | `162` | ID specifikacije proizvoda |
+| `activeIndex` | `0` | Aktivni tab (0 = prvi) |
+| `basketnum` | `undefined` | Nema postojeće korpe - ovo je NOVA narudžba |
+
+### Šta Ovo Znači Za Tebe Kao Junior Programera:
+
+```typescript
+// ngOnInit() radi ovo:
+
+// 1. Čita parametre iz URL-a
+this.route.params.subscribe(params => {
+  this.offerId = params['offerId'];     // 1174
+  this.specId = params['specId'];       // 162
+});
+
+// 2. Čita query parametre
+this.route.queryParams.subscribe(query => {
+  this.basketnum = query['basketnum'];  // undefined (nova narudžba)
+  // Ako postoji basketnum, znači da učitavamo postojeću narudžbu
+});
+
+// 3. Učitava podatke o korisniku iz SharedDataService
+this.ca = this.sharedData.customer.customerGeneralInfo;
+this.ba = this.sharedData.ba;
+
+// 4. Poziva getDynamic() da učita formu
+this.getDynamic();
+```
+
+---
+
+## B4. KORAK 2: getDynamic() - Učitavanje Strukture Forme
+
+Ova metoda poziva backend API da dobije JSON strukturu forme. Forma se ne piše u HTML-u, već dolazi dinamički!
+
+### Stvarni Console.log Podaci:
+
+```
+=== getDynamic START ===
+callback: undefined
+db.mod: new
+API poziv /pcrt/order-entry sa: {
+  productOfferId: '1174',
+  productSpecificationId: '162',
+  appProcessId: '10'
+}
+=== /pcrt/order-entry RESPONSE ===
+structure: {
+  structure: Array(1),      // Niz elemenata forme
+  parameters: {...},        // Parametri
+  validation: Array(0)      // Validaciona pravila
+}
+db.params NAKON update: {
+  type: 100,
+  processGroupCode: 'RESIDENTIAL_SALES',
+  orderTypeName: 'Osnovne usluge',
+  caId: '130025794',
+  baId: '330021716',
+  ...
+}
+=== getDynamic END ===
+```
+
+### Šta Je `db.mod`?
+
+`db.mod` je "mod" u kojem forma radi:
+
+| Vrijednost | Značenje |
+|------------|----------|
+| `new` | Nova narudžba - forma je prazna i editabilna |
+| `disabled` | Postojeća narudžba - forma je samo za pregled (readonly) |
+| `preview` | Preview mode |
+
+### Vizualni Prikaz API Poziva:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  FRONTEND                           BACKEND                                         │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  getDynamic()                                                                       │
+│       │                                                                             │
+│       │  GET /pcrt/order-entry                                                      │
+│       │  ?productOfferId=1174                                                       │
+│       │  &productSpecificationId=162                                                │
+│       │  &appProcessId=10                                                           │
+│       │                                                                             │
+│       └─────────────────────────────────►  ┌─────────────────────────────────────┐  │
+│                                            │  1. Pronađi definiciju forme za     │  │
+│                                            │     offer 1174 i spec 162           │  │
+│                                            │                                     │  │
+│                                            │  2. Generiši JSON sa elementima:    │  │
+│                                            │     - Input polja                   │  │
+│                                            │     - Dropdown-i                    │  │
+│                                            │     - Checkbox-i                    │  │
+│                                            │     - Sekcije                       │  │
+│                                            └─────────────────────────────────────┘  │
+│       ◄─────────────────────────────────────────────────────────────────────────────│
+│       │                                                                             │
+│  structure = response.structure                                                     │
+│  db.params = { ...parametri... }                                                    │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## B5. KORAK 3: save() - Kada Korisnik Klikne "Snimi"
+
+Ovo je najvažnija metoda! Kada korisnik klikne dugme "Snimi", poziva se `save()`.
+
+### SCENARIJO A: Prvi Save (Basket NE Postoji)
+
+```
+=== save() START ===
+basket.id: undefined                    <-- Basket ne postoji!
+db.model: {
+  auto: {...},
+  Osnovneusluge: {...},                 <-- Forma IMA podatke
+  loadOffer162: null,
+  parent: f
+}
+Basket NE postoji -> saveBasket() bez callback-a
+```
+
+### SCENARIJO B: Drugi Save (Basket POSTOJI)
+
+```
+=== save() START ===
+basket.id: 257534                       <-- Basket POSTOJI!
+db.model: {
+  auto: {...},
+  Osnovneusluge: {...},                 <-- Forma IMA podatke
+  loadOffer162: null,
+  parent: f
+}
+Basket POSTOJI -> saveBasket() sa callback: saveItem
+```
+
+### Logika u Kodu:
+
+```typescript
+save() {
+  // Provjera: da li basket već postoji?
+  if (!this.basket.id) {
+    // PRVI SAVE - kreiraj novi basket
+    // callback je undefined, što znači firstsave = true
+    this.saveBasket();
+  } else {
+    // DRUGI SAVE - basket već postoji
+    // callback je 'saveItem', što znači firstsave = false
+    this.saveBasket('saveItem');
+  }
+}
+```
+
+### Zašto Je Ovo Važno?
+
+Razlika između prvog i drugog save-a je KRITIČNA:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                        PRVI SAVE vs DRUGI SAVE                                      │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  PRVI SAVE (basket.id = undefined)        DRUGI SAVE (basket.id = 257534)          │
+│  ─────────────────────────────────────    ─────────────────────────────────────    │
+│                                                                                     │
+│  1. saveBasket() bez callback-a           1. saveBasket('saveItem')                 │
+│  2. firstsave = true                      2. firstsave = false                      │
+│  3. Kreira novi basket na backendu        3. Ažurira postojeći basket               │
+│  4. assignObjects() SE POZIVA!            4. assignObjects() se NE poziva           │
+│     └── db.model = {auto: {}}                └── db.model OSTAJE popunjen           │
+│  5. saveSuicapture() sa PRAZNIM modelom   5. saveSuicapture() sa PUNIM modelom      │
+│                                                                                     │
+│  REZULTAT: Model se gubi!                 REZULTAT: Model se spašava!               │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## B6. KORAK 4: saveBasket() - Kreiranje/Ažuriranje Korpe
+
+### Prvi Save - Kreiranje Nove Korpe:
+
+```
+=== saveBasket() START ===
+callback: undefined
+firstsave: true
+setBasket() podaci: {
+  id: null,                              <-- null jer je nova korpa
+  headbasketnum: undefined,
+  acontactId: 45112814,
+  bacustomerId: 330021716,
+  cacustomerId: 130025794,
+  description: 'opis test',              <-- Korisnikov unos!
+  comments: 'komentar test'              <-- Korisnikov unos!
+}
+/uomback/basket/save RESPONSE: {
+  responseCode: 0,
+  responseDetail: 'OK',
+  payload: {...}
+}
+basket NAKON response: {
+  id: 257534,                            <-- Backend je dodijelio ID!
+  basketnum: '257532-01/26',             <-- I broj korpe!
+  baskettypeCode: 'SALES',
+  description: 'opis test',
+  comments: 'komentar test'
+}
+=== saveBasket() END ===
+```
+
+### Drugi Save - Ažuriranje Postojeće Korpe:
+
+```
+=== saveBasket() START ===
+callback: saveItem
+firstsave: false
+setBasket() podaci: {
+  id: 257534,                            <-- Postojeći ID
+  ...
+}
+/uomback/basket/save RESPONSE: {
+  responseCode: 0,
+  responseDetail: 'OK'
+}
+basket NAKON response: {
+  id: 257534,
+  basketnum: '257532-01/26'
+}
+=== saveBasket() END ===
+```
+
+### Struktura Basket Objekta:
+
+```typescript
+basket = {
+  // Identifikacija
+  id: 257534,                    // Jedinstveni ID korpe
+  basketnum: '257532-01/26',     // Čitljiv broj korpe (godina/redni broj)
+
+  // Veze sa korisnicima
+  cacustomerId: 130025794,       // Customer Account ID
+  bacustomerId: 330021716,       // Billing Account ID
+  acontactId: 45112814,          // Contact ID
+
+  // Tip i status
+  baskettypeCode: 'SALES',       // Tip: SALES, CHANGE, CANCEL...
+  basketstatusCode: 'IN_CREATION', // Status: IN_CREATION, SUBMITTED...
+
+  // Korisnikov unos
+  description: 'opis test',      // Opis narudžbe
+  comments: 'komentar test',     // Komentari
+
+  // Meta podaci
+  expecteddate: undefined,       // Očekivani datum realizacije
+  save: true                     // Flag za spremanje
+}
+```
+
+---
+
+## B7. KORAK 5: saveSuicapture() - Spašavanje Stanja Forme
+
+Ovo je mehanizam koji omogućava da se forma sačuva i kasnije vrati u istom stanju.
+
+### Prvi Save - Model Je PRAZAN:
+
+```
+=== saveSuicapture() START ===
+db.model: {auto: {}}                     <-- PRAZAN! Reset-ovan kroz assignObjects()
+db.output: {}                            <-- PRAZAN!
+ca: {id: 130025794, status: 'A', ...}
+ba: {id: 330021716, status: 'A', ...}
+basket: {id: 257534, basketnum: '257532-01/26', ...}
+basketnum: 257532-01/26
+
+jsonSetup za slanje: {
+  entryParams: '{"processId":"10","offerId":"1174","specId":"162"}',
+  model: '{"model":{"auto":{}},"output":{}}',    <-- PRAZAN MODEL!
+  structure: '{"ca":{...},"ba":{...},"basket":{...}}',
+  ordnum: '257532-01/26'
+}
+=== saveSuicapture() END ===
+```
+
+### Drugi Save - Model IMA PODATKE:
+
+```
+=== saveSuicapture() START ===
+db.model: {                              <-- IMA PODATKE!
+  auto: {...},
+  Osnovneusluge: {...},
+  loadOffer162: null,
+  parent: f
+}
+db.output: {Osnovneusluge: {...}}        <-- IMA PODATKE!
+ca: {id: 130025794, status: 'A', ...}
+ba: {id: 330021716, status: 'A', ...}
+basket: {
+  id: 257534,
+  basketnum: '257532-01/26',
+  description: 'opis',
+  comments: 'komentar'
+}
+basketnum: 257532-01/26
+
+jsonSetup za slanje: {
+  entryParams: '{"processId":"10","offerId":"1174","specId":"162"}',
+  model: '{"model":{"auto":{},"Osnovneusluge":{...}},"output":{...}}',  <-- PUN MODEL!
+  structure: '{"ca":{...},"ba":{...},"basket":{...,"comments":"komentar","description":"opis"}}',
+  ordnum: '257532-01/26'
+}
+=== saveSuicapture() END ===
+```
+
+### Šta Se Spašava u Suicapture:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                        STRUKTURA SUICAPTURE PODATAKA                                │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  jsonSetup = {                                                                      │
+│                                                                                     │
+│    entryParams: JSON.stringify({                                                    │
+│      processId: "10",              // ID procesa                                    │
+│      offerId: "1174",              // ID ponude                                     │
+│      specId: "162"                 // ID specifikacije                              │
+│    }),                                                                              │
+│                                                                                     │
+│    model: JSON.stringify({                                                          │
+│      model: {                      // Vrijednosti iz forme                          │
+│        auto: {...},                // Auto-generisane vrijednosti                   │
+│        Osnovneusluge: {            // Sekcija "Osnovne usluge"                      │
+│          polje1: "vrijednost1",    // Pojedinačna polja                             │
+│          polje2: "vrijednost2"                                                      │
+│        }                                                                            │
+│      },                                                                             │
+│      output: {                     // Strukturirani output za backend               │
+│        Osnovneusluge: {...}                                                         │
+│      }                                                                              │
+│    }),                                                                              │
+│                                                                                     │
+│    structure: JSON.stringify({                                                      │
+│      ca: {...},                    // Customer Account podaci                       │
+│      ba: {...},                    // Billing Account podaci                        │
+│      sa: {...},                    // Service Agreement podaci                      │
+│      contact: {...},               // Kontakt podaci                                │
+│      basket: {                     // Korpa sa korisnikovim unosom                  │
+│        id: 257534,                                                                  │
+│        basketnum: "257532-01/26",                                                   │
+│        comments: "komentar",                                                        │
+│        description: "opis"                                                          │
+│      }                                                                              │
+│    }),                                                                              │
+│                                                                                     │
+│    ordnum: "257532-01/26"          // Broj narudžbe (ključ za pronalaženje)         │
+│  }                                                                                  │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## B8. Ključni Problem: Zašto Je Model Prazan Na Prvom Save?
+
+Ovo je najvažniji insight iz testiranja!
+
+### Uzrok Problema:
+
+U `saveBasket()` metodi, kada je `firstsave = true`, poziva se `assignObjects()`:
+
+```typescript
+saveBasket(callback?: string) {
+  let firstsave = callback ? false : true;
+
+  // ... API poziv za kreiranje basket-a ...
+
+  this.api.post('/uomback/basket/save', this.setBasket()).subscribe(response => {
+    this.basket = response.payload;
+
+    if (firstsave) {
+      // OVO JE PROBLEM!
+      this.assignObjects();  // <-- Resetuje db.model na {auto: {}}
+    }
+
+    this.saveSuicapture();   // <-- Poziva se sa praznim modelom!
+  });
+}
+```
+
+### Šta Radi `assignObjects()`?
+
+```typescript
+assignObjects() {
+  // Ova metoda "čisti" model i priprema ga za novu sesiju
+  this.db.model = { auto: {} };  // RESET!
+  // ... ostala logika ...
+}
+```
+
+### Vizualni Prikaz Problema:
+
+```
+PRVI SAVE:
+──────────
+save()
+  │
+  │  db.model = {auto:{}, Osnovneusluge:{...}}  // IMA PODATKE
+  │
+  └──► saveBasket() [firstsave = true]
+          │
+          │  API: POST /uomback/basket/save  ──► USPJEŠNO, basket.id = 257534
+          │
+          └──► assignObjects()
+                  │
+                  │  db.model = {auto: {}}  // RESET! Podaci forme IZGUBLJENI!
+                  │
+                  └──► saveSuicapture()
+                          │
+                          │  model = {auto: {}}  // PRAZAN model se spašava
+                          │
+                          └──► API: POST /uomback/suicapture
+
+
+DRUGI SAVE:
+───────────
+save()
+  │
+  │  db.model = {auto:{}, Osnovneusluge:{...}}  // IMA PODATKE
+  │
+  └──► saveBasket('saveItem') [firstsave = false]
+          │
+          │  API: POST /uomback/basket/save  ──► USPJEŠNO
+          │
+          │  assignObjects() se NE POZIVA!
+          │
+          └──► saveSuicapture()
+                  │
+                  │  model = {auto:{}, Osnovneusluge:{...}}  // PUN model!
+                  │
+                  └──► API: POST /uomback/suicapture
+```
+
+---
+
+## B9. Razumijevanje `db.model` i `db.output`
+
+### Šta Je `db.model`?
+
+`db.model` je objekat koji drži **sve vrijednosti** koje korisnik unese u formu.
+
+```typescript
+db.model = {
+  auto: {
+    // Auto-generisane vrijednosti (sekvence, datumi, itd.)
+  },
+  Osnovneusluge: {
+    // Vrijednosti iz sekcije "Osnovne usluge"
+    nekoPolje: "vrijednost",
+    drugoPolje: 123
+  },
+  loadOffer162: null,    // Specijalno polje za učitavanje ponude
+  parent: function(){}   // Referenca na parent
+}
+```
+
+### Šta Je `db.output`?
+
+`db.output` je **strukturirani** objekat koji se koristi za slanje na backend. Razlika od `db.model`:
+
+| `db.model` | `db.output` |
+|------------|-------------|
+| "Sirovi" podaci forme | Strukturirani za API |
+| Uključuje pomoćna polja | Samo bitna polja |
+| Flat struktura | Hijerarhijska struktura |
+
+```typescript
+db.output = {
+  Osnovneusluge: {
+    serviceAgreement: {
+      // Podaci za kreiranje Service Agreement-a
+    },
+    productOrder: {
+      // Podaci za kreiranje narudžbe
+    }
+  }
+}
+```
+
+### Kako Se Popunjavaju?
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  FORMA (UI)                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│  │  [Input polje: Ime]  ──────────────────────────────────────────────────────┐  │  │
+│  │                                                                            │  │  │
+│  │  [Dropdown: Tip]  ────────────────────────────────────────────────────────┐│  │  │
+│  │                                                                           ││  │  │
+│  │  [Checkbox: Aktivan]  ───────────────────────────────────────────────────┐││  │  │
+│  └───────────────────────────────────────────────────────────────────────────┘││  │  │
+│                                                                              │││  │  │
+└──────────────────────────────────────────────────────────────────────────────┘││──┘  │
+                                                                               │││
+    z-contentloader.component.ts                                               │││
+    ─────────────────────────────                                              │││
+    ngOnInit() {                                                               │││
+      // Kada korisnik promijeni vrijednost                                    │││
+      this.db.model[this.el.name] = newValue;  ◄───────────────────────────────┘││
+                                                                                ││
+      // Strukturira za output                                                  ││
+      this.db.setoutput(this.el, value);  ◄─────────────────────────────────────┘│
+    }                                                                            │
+                                                                                 │
+    ┌───────────────────────────────────────────────────────────────────────────┐│
+    │  db.model = {                                                             ││
+    │    Ime: "Marko",            ◄─────────────────────────────────────────────┘│
+    │    Tip: "residential",       ◄──────────────────────────────────────────────┘
+    │    Aktivan: true             ◄───────────────────────────────────────────────
+    │  }                                                                         │
+    └───────────────────────────────────────────────────────────────────────────┘│
+
+```
+
+---
+
+## B10. Kompletni Tok Podataka - Od Otvaranja Do Spašavanja
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  1. KORISNIK OTVARA URL                                                             │
+│     /evidencija/residential/1174/162/0?processId=10&caId=130025794&baId=330021716   │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  2. ngOnInit() SE IZVRŠAVA                                                          │
+│     ├── Parsira URL: offerId=1174, specId=162                                       │
+│     ├── Parsira Query: caId=130025794, baId=330021716                               │
+│     ├── Učitava: ca, ba, sa, contact iz SharedDataService                           │
+│     └── Poziva: getDynamic()                                                        │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  3. getDynamic() - API POZIV                                                        │
+│     GET /pcrt/order-entry?productOfferId=1174&productSpecificationId=162            │
+│                                                                                     │
+│     RESPONSE:                                                                       │
+│     {                                                                               │
+│       structure: [                                                                  │
+│         {                                                                           │
+│           name: "Osnovneusluge",                                                    │
+│           label: "Osnovne usluge",                                                  │
+│           elements: [                                                               │
+│             { name: "polje1", template: "input", ... },                             │
+│             { name: "polje2", template: "select", ... }                             │
+│           ]                                                                         │
+│         }                                                                           │
+│       ]                                                                             │
+│     }                                                                               │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  4. FORMA SE RENDERUJE                                                              │
+│                                                                                     │
+│     z-pageloader iterira kroz structure                                             │
+│         │                                                                           │
+│         └──► z-contentloader renderuje svaki element                                │
+│                 │                                                                   │
+│                 ├── Input polje → <input type="text">                               │
+│                 ├── Select → <select><option>...</select>                           │
+│                 └── Checkbox → <input type="checkbox">                              │
+│                                                                                     │
+│     db.model se inicijalizira sa defaultnim vrijednostima                           │
+│     db.mod = "new" (editabilno)                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  5. KORISNIK POPUNJAVA FORMU                                                        │
+│                                                                                     │
+│     [Ime: "Test"]  ──► db.model.Osnovneusluge.Ime = "Test"                          │
+│     [Tip: "A"]     ──► db.model.Osnovneusluge.Tip = "A"                             │
+│     [Opis: "..."]  ──► basket.description = "..."                                   │
+│                                                                                     │
+│     db.model = {                                                                    │
+│       auto: {...},                                                                  │
+│       Osnovneusluge: { Ime: "Test", Tip: "A", ... }                                 │
+│     }                                                                               │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  6. KORISNIK KLIKNE "SNIMI" - PRVI PUT                                              │
+│                                                                                     │
+│     save()                                                                          │
+│       │                                                                             │
+│       │  basket.id = undefined  ──► PRVI SAVE                                       │
+│       │                                                                             │
+│       └──► saveBasket() [bez callback-a]                                            │
+│               │                                                                     │
+│               │  POST /uomback/basket/save                                          │
+│               │  RESPONSE: { payload: { id: 257534, basketnum: "257532-01/26" } }   │
+│               │                                                                     │
+│               └──► assignObjects()  ──► db.model = {auto: {}}  // RESET!            │
+│                       │                                                             │
+│                       └──► saveSuicapture()                                         │
+│                               │                                                     │
+│                               │  POST /uomback/suicapture                           │
+│                               │  { model: "{\"model\":{\"auto\":{}}}", ... }        │
+│                               │                                                     │
+│                               │  MODEL JE PRAZAN!                                   │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  7. getDynamic() SE PONOVO POZIVA (nakon prvog save-a)                              │
+│                                                                                     │
+│     db.mod = "new" (još uvijek editabilno)                                          │
+│     Forma se ponovo renderuje sa praznim db.model                                   │
+│     Korisnik PONOVO popunjava formu                                                 │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  8. KORISNIK KLIKNE "SNIMI" - DRUGI PUT                                             │
+│                                                                                     │
+│     save()                                                                          │
+│       │                                                                             │
+│       │  basket.id = 257534  ──► DRUGI SAVE                                         │
+│       │                                                                             │
+│       └──► saveBasket('saveItem')                                                   │
+│               │                                                                     │
+│               │  POST /uomback/basket/save                                          │
+│               │                                                                     │
+│               │  assignObjects() SE NE POZIVA!                                      │
+│               │                                                                     │
+│               └──► saveSuicapture()                                                 │
+│                       │                                                             │
+│                       │  POST /uomback/suicapture                                   │
+│                       │  {                                                          │
+│                       │    model: "{\"model\":{\"auto\":{},\"Osnovneusluge\":       │
+│                       │            {\"Ime\":\"Test\",...}}}",                       │
+│                       │    ...                                                      │
+│                       │  }                                                          │
+│                       │                                                             │
+│                       │  MODEL IMA PODATKE!                                         │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## B11. Rječnik Pojmova Za Junior Programere
+
+| Pojam | Objašnjenje |
+|-------|-------------|
+| `basket` | "Korpa" - kontejner za narudžbu, sličan košarici u web shopu |
+| `ca` (Customer Account) | Glavni račun korisnika - sadrži lične podatke |
+| `ba` (Billing Account) | Račun za naplatu - vezan za ca, koristi se za fakturisanje |
+| `sa` (Service Agreement) | Ugovor o usluzi - nastaje kada se aktivira usluga |
+| `db.model` | Objekat koji drži sve vrijednosti forme |
+| `db.output` | Strukturirani podaci za slanje na backend |
+| `db.params` | Parametri koji se koriste za generisanje forme |
+| `db.mod` | Mod forme: "new" (editabilno), "disabled" (readonly) |
+| `suicapture` | Mehanizam za spašavanje i vraćanje stanja forme |
+| `structure` | JSON definicija forme koja dolazi sa backend-a |
+| `offerId` | ID ponude (ProductOffer) |
+| `specId` | ID specifikacije proizvoda (ProductSpecification) |
+| `processId` | ID procesa (workflow koraka) |
+| `firstsave` | Flag koji označava da li je ovo prvi put da se spašava |
+
+---
+
+## B12. Najčešće Greške i Kako Ih Izbjeći
+
+### Greška 1: Zašto je model prazan nakon prvog save-a?
+
+**Uzrok:** `assignObjects()` resetuje `db.model` na `{auto: {}}`
+
+**Rješenje:** Model se ispravno spašava tek na DRUGI save
+
+### Greška 2: Backend vraća 500 error na `/uomback/basketitem/save/new`
+
+**Uzrok:** Backend greška - frontend ispravno šalje podatke
+
+**Rješenje:** Provjeri backend logove
+
+### Greška 3: Forma je readonly (disabled) iako je nova narudžba
+
+**Uzrok:** `db.mod` je postavljen na "disabled"
+
+**Provjera:** U console.log-u, provjeriti vrijednost `db.mod` u `getDynamic()`
+
+---
+
+## B13. Kako Debugirati Ovu Komponentu
+
+### Korak 1: Dodaj console.log u ključne metode
+
+```typescript
+// ngOnInit
+console.log('=== ngOnInit ===');
+console.log('Query Params:', this.route.snapshot.queryParams);
+console.log('Route Params:', this.route.snapshot.params);
+console.log('basketnum:', this.basketnum);
+
+// getDynamic
+console.log('=== getDynamic ===');
+console.log('db.mod:', this.db.mod);
+console.log('API params:', { productOfferId, productSpecificationId, appProcessId });
+
+// save
+console.log('=== save ===');
+console.log('basket.id:', this.basket.id);
+console.log('db.model:', this.db.model);
+
+// saveBasket
+console.log('=== saveBasket ===');
+console.log('firstsave:', firstsave);
+console.log('setBasket():', this.setBasket());
+
+// saveSuicapture
+console.log('=== saveSuicapture ===');
+console.log('db.model:', this.db.model);
+console.log('db.output:', this.db.output);
+console.log('jsonSetup:', jsonSetup);
+```
+
+### Korak 2: Provjeri Network tab u DevTools
+
+Prati ove API pozive:
+1. `GET /pcrt/order-entry` - Struktura forme
+2. `POST /uomback/basket/save` - Kreiranje/ažuriranje korpe
+3. `POST /uomback/suicapture` - Spašavanje stanja
+4. `POST /uomback/basketitem/save/new` - Dodavanje stavke
+
+### Korak 3: Provjeri Response Status
+
+- `200 OK` - Uspješno
+- `400 Bad Request` - Pogrešni podaci
+- `500 Internal Server Error` - Backend greška
+
+---
+
+*Ažurirano: 2026-02-02*
+*Sekcija: Praktični Vodič sa Stvarnim Podacima iz Console.log Testiranja*
