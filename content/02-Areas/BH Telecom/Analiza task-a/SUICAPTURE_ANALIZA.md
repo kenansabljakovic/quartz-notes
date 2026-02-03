@@ -3187,5 +3187,717 @@ Prati ove API pozive:
 
 ---
 
-*Ažurirano: 2026-02-02*
-*Sekcija: Praktični Vodič sa Stvarnim Podacima iz Console.log Testiranja*
+---
+
+# SEKCIJA C: SUICAPTURE REQUEST - Detaljna Analiza Sa Stvarnim Podacima
+
+Ovo je kompletan suicapture request koji se šalje na drugi save. Razložen je svaki dio sa objašnjenjima.
+
+---
+
+## C1. Struktura Suicapture Requesta
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  SUICAPTURE REQUEST STRUKTURA                                                       │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  {                                                                                  │
+│    "languageId": 0,              // Jezik (0 = default)                             │
+│    "channel": "",                // Kanal prodaje                                   │
+│    "entity": {                   // GLAVNI PODACI                                   │
+│      "entryParams": "...",       // Parametri za učitavanje forme                   │
+│      "model": "...",             // Vrijednosti forme (db.model + db.output)        │
+│      "structure": "...",         // Korisnik/računi/basket podaci                   │
+│      "ordnum": "..."             // Broj narudžbe (ključ)                           │
+│    }                                                                                │
+│  }                                                                                  │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## C2. `entryParams` - Parametri Za Učitavanje Forme
+
+```json
+{
+  "processId": "10",      // ID procesa (workflow)
+  "offerId": "1174",      // ID ponude (ProductOffer)
+  "specId": "162"         // ID specifikacije (ProductSpecification)
+}
+```
+
+**Svrha:** Kada se forma ponovo otvori, ovi parametri se koriste za poziv:
+```
+GET /pcrt/order-entry?productOfferId=1174&productSpecificationId=162&appProcessId=10
+```
+
+---
+
+## C3. `model` - Vrijednosti Forme
+
+```json
+{
+  "model": {
+    "auto": {},                    // Auto-generisane vrijednosti (prazno)
+    "Osnovneusluge": {},           // Sekcija forme (PRAZNO - nisi popunio polja)
+    "loadOffer162": null           // Referenca na ponudu
+  },
+  "output": {
+    "Osnovneusluge": {
+      "attr": {},                  // Atributi
+      "items": {},                 // Stavke
+      "spec": {},                  // Specifikacije
+      "name": "Osnovneusluge",     // Ime sekcije
+      "code": "162",               // Kod specifikacije
+      "active": true,              // Da li je aktivna
+      "calss": "SPECIFICATION",    // Tip (class, typo u kodu)
+      "businessParams": null,
+      "label": "Osnovne usluge",   // Labela za prikaz
+      "elementType": null
+    }
+  }
+}
+```
+
+**Napomena:** `Osnovneusluge: {}` je prazan jer nisi popunio polja forme. Kada popuniš polja, ovdje bi bili podaci poput:
+```json
+"Osnovneusluge": {
+  "brojTelefona": "033/123-456",
+  "tipUsluge": "ISDN",
+  "ugovornoVezivanje": "24"
+}
+```
+
+---
+
+## C4. `structure` - Podaci O Korisniku, Računima i Košarici
+
+Ovo je najveći dio. Razložen je po sekcijama:
+
+### C4.1 `ca` - Customer Account (Korisnik)
+
+```json
+{
+  "id": 130025794,                           // Jedinstveni ID korisnika
+  "status": "A",                             // A = Aktivan
+  "activationdate": "2026-01-30T09:12:31",   // Datum aktivacije
+  "contractpointInd": "0",                   // Nije contract point
+  "customerstypeCode": "1000",               // Tip korisnika (šifra)
+  "customertypeCode": "100",                 // 100 = Fizičko lice
+  "customertypeName": "Fizičko lice",
+  "mainlocationId": 2,                       // Glavna lokacija
+  "mainlocationName": "Direkcija Sarajevo",
+  "saleslocationId": 2,                      // Prodajna lokacija
+  "salesslocationId": 24,                    // Pod-lokacija
+  "salesslocationName": "Šalter-Dolac Malta",
+  "parentInd": "1",                          // 1 = Ovo je parent (Head CA)
+  "pCaId": 130025794,                        // Parent CA ID (sam sebi parent)
+
+  // Lični podaci
+  "customerinfo": {
+    "birthdate": "2026-01-19",
+    "firstname": "JNF-8241",
+    "lastname": "130025794 - JNF-8241 JNF-8241",
+    "surname": "JNF-8241",
+    "genderCode": "M",                       // Muško
+    "defaultCustomer": "JNF-8241 JNF-8241"
+  },
+
+  // GDPR saglasnost
+  "ccustomergdpr": {
+    "promNotfcs": "0",       // Promotivne notifikacije: NE
+    "providingData": "1",    // Dostavljanje podataka: DA
+    "bhtMarketing": "1",     // BHT marketing: DA
+    "profiling": "1",        // Profiliranje: DA
+    "status": "1"            // Aktivan
+  },
+
+  // Kontakti
+  "contacts": [{
+    "id": 45112814,
+    "firstname": "JNF-8241 JNF-8241",
+    "cmethodCode": "EMAIL",
+    "mobilephone": "061/677889",
+    "email": "omar.bilalovic@gmail.com",
+    "croletypeCode": "100",           // 100 = Korisnik
+    "croletypeName": "Korisnik"
+  }],
+
+  // Adrese
+  "addresses": [{
+    "id": 21177314,
+    "addressCode": "54307",
+    "addressname": "24 Juni",
+    "houseno": "234",
+    "townName": "GRAD SARAJEVO",
+    "zipCode": "71000",
+    "aroletypeCode": "100",           // 100 = Adresa sjedišta
+    "aroletypeName": "Adresa sjedišta",
+    "addressCodeName": "GRAD SARAJEVO, 24 Juni 234"
+  }],
+
+  // Identifikacioni dokumenti
+  "customeridents": [{
+    "identtypeCode": "SCHOOL",
+    "identno": "119955",
+    "identtypeName": "Đačka knjižica"
+  }],
+
+  // Billing accounti grupirani po tehnologiji
+  "groupedByTechnology": [{
+    "ptechnologyCode": "100",
+    "ptechnologyName": "Fiksna",
+    "billingAccounts": [...]
+  }]
+}
+```
+
+### C4.2 `ba` - Billing Account (Primaoc Računa)
+
+```json
+{
+  "id": 330021716,                           // BA ID
+  "status": "A",                             // Aktivan
+  "customerId": 130025794,                   // Pripada CA-u
+  "activationdate": "2026-01-26T15:05:38",
+  "billpointInd": "0",                       // Nije bill point
+  "headId": 130025794,                       // Head CA
+  "ptechnologyCode": "100",                  // Fiksna tehnologija
+  "ptechnologyName": "Fiksna",
+  "customerName": "330021716 - JNF-8241-B",
+  "pCaId": 130025794,                        // Parent CA
+  "pBaId": 330021716,                        // Parent BA (sam sebi)
+
+  // Kontakti BA
+  "contacts": [{
+    "id": 45112815,
+    "firstname": " JNF-8241-B",
+    "croletypeCode": "200",                  // 200 = Primaoc računa
+    "croletypeName": "Primaoc računa"
+  }],
+
+  // Adrese BA
+  "addresses": [{
+    "id": 21177315,
+    "addressname": "Abdića",
+    "houseno": "123",
+    "townName": "GRAD SARAJEVO",
+    "aroletypeCode": "200",                  // 200 = Adresa za dostavu računa
+    "aroletypeName": "Adresa za dostavu računa",
+    "addressCodeName": "GRAD SARAJEVO, Abdića 123"
+  }],
+
+  "billingAddress": "GRAD SARAJEVO, Abdića 123"
+}
+```
+
+### C4.3 `sa` - Service Agreement (Servisni Ugovor)
+
+```json
+{
+  "id": 515653794,
+  "address": "GRAD SARAJEVO, Abdulaha Bošnjaka 234",
+  "addressId": 21177285
+}
+```
+
+### C4.4 `contact` - Odabrani Kontakt
+
+```json
+{
+  "contact": true,
+  "id": 45112814,
+  "croletypeName": "Korisnik",
+  "firstname": "JNF-8241 JNF-8241"
+}
+```
+
+### C4.5 `basket` - Korpa/Narudžba
+
+```json
+{
+  "save": true,                              // Označava da je spašen
+  "id": 257552,                              // Basket ID
+  "basketnum": "257550-01/26",               // Broj narudžbe (čitljiv)
+  "baskettypeCode": "SALES",                 // Tip: Prodaja
+  "created": "2026-02-03T14:58:31.062",      // Datum kreiranja
+  "createdBy": "aa",                         // Ko je kreirao
+  "headbasketnum": "257550/26",              // Glavni broj narudžbe
+  "orderdate": "2026-02-03T14:58:31.062",    // Datum narudžbe
+  "status": "0",                             // Status kod
+  "statusName": "U pripremi",                // Status ime
+  "basketTypeName": "SALES",
+  "comments": "test",                        // Tvoj komentar!
+  "description": "test"                      // Tvoj opis!
+}
+```
+
+---
+
+## C5. `ordnum` - Ključ Za Pronalaženje
+
+```json
+"ordnum": "257550-01/26"
+```
+
+Ovo je ključ po kojem se suicapture pronalazi kada se forma ponovo otvori.
+
+---
+
+## C6. Vizualni Pregled Cijele Strukture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  SUICAPTURE - KOMPLETNA SLIKA                                                       │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  ordnum: "257550-01/26"  ← KLJUČ za pronalaženje                                    │
+│                                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  entryParams                                                                │    │
+│  │  ├── processId: "10"                                                        │    │
+│  │  ├── offerId: "1174"        Za učitavanje iste forme                        │    │
+│  │  └── specId: "162"                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  model                                                                      │    │
+│  │  ├── model.auto: {}                                                         │    │
+│  │  ├── model.Osnovneusluge: {}    Vrijednosti polja (prazno)                  │    │
+│  │  └── output.Osnovneusluge: {}   Struktura za backend                        │    │
+│  └─────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │  structure                                                                  │    │
+│  │  │                                                                          │    │
+│  │  ├── ca (Customer Account)                                                  │    │
+│  │  │   ├── id: 130025794                                                      │    │
+│  │  │   ├── customerinfo: {ime, prezime, datum rođenja}                        │    │
+│  │  │   ├── contacts: [{email, telefon}]                                       │    │
+│  │  │   ├── addresses: [{adresa sjedišta}]                                     │    │
+│  │  │   └── ccustomergdpr: {GDPR saglasnosti}                                  │    │
+│  │  │                                                                          │    │
+│  │  ├── ba (Billing Account)                                                   │    │
+│  │  │   ├── id: 330021716                                                      │    │
+│  │  │   ├── ptechnologyName: "Fiksna"                                          │    │
+│  │  │   ├── contacts: [{primaoc računa}]                                       │    │
+│  │  │   └── addresses: [{adresa za račun}]                                     │    │
+│  │  │                                                                          │    │
+│  │  ├── sa (Service Agreement)                                                 │    │
+│  │  │   ├── id: 515653794                                                      │    │
+│  │  │   └── address: "instalacijska adresa"                                    │    │
+│  │  │                                                                          │    │
+│  │  ├── contact                                                                │    │
+│  │  │   └── id: 45112814 (odabrani kontakt)                                    │    │
+│  │  │                                                                          │    │
+│  │  └── basket                                                                 │    │
+│  │      ├── id: 257552                                                         │    │
+│  │      ├── basketnum: "257550-01/26"                                          │    │
+│  │      ├── status: "U pripremi"                                               │    │
+│  │      ├── comments: "test"        ← TVOJ UNOS                                │    │
+│  │      └── description: "test"     ← TVOJ UNOS                                │    │
+│  │                                                                             │    │
+│  └─────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## C7. Šta Se Dešava Kada Ponovo Otvoriš Formu?
+
+```
+1. Otvori URL sa basketnum=257550-01/26
+
+2. ngOnInit() → loadDynamicData()
+   │
+   └── GET /uomback/suicapture/ordnum?ordnum=257550-01/26
+       │
+       └── RESPONSE: Cijeli ovaj JSON koji si pokazao
+
+3. Parsiraj podatke:
+   │
+   ├── Object.assign(this.db, JSON.parse(r.payload.model))
+   │   └── Vrati db.model i db.output
+   │
+   ├── Object.assign(this, JSON.parse(r.payload.entryParams))
+   │   └── Postavi processId, offerId, specId
+   │
+   └── Object.assign(this, JSON.parse(r.payload.structure))
+       └── Vrati ca, ba, sa, contact, basket
+
+4. getDynamic() → Učitaj strukturu forme
+
+5. Forma se renderuje sa sačuvanim podacima
+```
+
+---
+
+---
+
+# SEKCIJA D: SUICAPTURE - Jednostavno Objašnjenje Sa Analogijom
+
+Ova sekcija objašnjava suicapture mehanizam na najjednostavniji mogući način, koristeći analogije iz svakodnevnog života.
+
+---
+
+## D1. Suicapture = "Save Game" u Video Igri
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│  VIDEO IGRA                              JPP APLIKACIJA                             │
+│  ──────────                              ───────────────                            │
+│                                                                                     │
+│  Igraš igru...                           Popunjavaš formu...                        │
+│       │                                        │                                    │
+│       ▼                                        ▼                                    │
+│  Klikneš "SAVE GAME"                     Klikneš "SNIMI"                            │
+│       │                                        │                                    │
+│       ▼                                        ▼                                    │
+│  Igra sačuva:                            Suicapture sačuva:                         │
+│  - Tvoju poziciju                        - Vrijednosti forme (model)                │
+│  - Tvoje oružje                          - Podatke o korisniku (ca, ba)             │
+│  - Tvoj level                            - Broj narudžbe (basketnum)                │
+│  - Tvoj inventar                         - Parametre (offerId, specId)              │
+│       │                                        │                                    │
+│       ▼                                        ▼                                    │
+│  Sutra otvoriš igru                      Sutra otvoriš formu                        │
+│  Klikneš "LOAD GAME"                     URL ima basketnum=257550-01/26             │
+│       │                                        │                                    │
+│       ▼                                        ▼                                    │
+│  Igra učita sve nazad                    Forma učita sve nazad                      │
+│  Nastavljaš gdje si stao                 Nastavljaš gdje si stao                    │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## D2. Problem Koji Suicapture Rješava
+
+**Problem:** Korisnik popunjava formu, ali ne završi. Zatvori browser. Sutra želi nastaviti.
+
+**Rješenje:** Suicapture spašava SVE podatke u bazu, i vraća ih kada korisnik ponovo otvori formu.
+
+```
+SPAŠAVANJE (SAVE):
+──────────────────
+Korisnik klikne "Snimi"
+       │
+       ▼
+┌──────────────────────────────────────┐
+│  Uzmi sve podatke:                   │
+│  - Šta je korisnik upisao u formu    │
+│  - Ko je korisnik (CA)               │
+│  - Ko plaća račun (BA)               │
+│  - Broj narudžbe                     │
+└──────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│  Spakuj u JSON                       │
+└──────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│  POST /uomback/suicapture            │
+│  Pošalji na server                   │
+│  Server spremi u bazu                │
+└──────────────────────────────────────┘
+
+
+UČITAVANJE (LOAD):
+──────────────────
+Korisnik otvori URL sa ?basketnum=257550-01/26
+       │
+       ▼
+┌──────────────────────────────────────┐
+│  GET /uomback/suicapture/ordnum      │
+│  ?ordnum=257550-01/26                │
+│  Traži sačuvane podatke              │
+└──────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│  Server vrati JSON                   │
+└──────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────┐
+│  Raspakovaj JSON                     │
+│  Vrati podatke u formu               │
+│  Korisnik vidi sve kao prije         │
+└──────────────────────────────────────┘
+```
+
+---
+
+## D3. Četiri Kutije U Suicapture
+
+Zamisli da imaš 4 kutije u koje pakuješ stvari prije selidbe:
+
+### Kutija 1: `entryParams` - "Koju Formu Da Učitam?"
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KUTIJA 1: entryParams                                                              │
+│  ─────────────────────                                                              │
+│                                                                                     │
+│  ┌─────────────────────────────────┐                                                │
+│  │  processId: "10"                │  ← Koji proces (workflow)                      │
+│  │  offerId: "1174"                │  ← Koja ponuda                                 │
+│  │  specId: "162"                  │  ← Koja specifikacija proizvoda                │
+│  └─────────────────────────────────┘                                                │
+│                                                                                     │
+│  ANALOGIJA: Kao da kažeš "Otvori Word dokument sa lokacije C:\Dokumenti\ugovor.docx"│
+│                                                                                     │
+│  Primjer: "Učitaj formu za Fiksnu telefoniju, ponuda 1174, specifikacija 162"       │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Kutija 2: `model` - "Šta Je Korisnik Upisao?"
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KUTIJA 2: model                                                                    │
+│  ───────────────                                                                    │
+│                                                                                     │
+│  ┌─────────────────────────────────┐                                                │
+│  │  model: {                       │                                                │
+│  │    Osnovneusluge: {             │                                                │
+│  │      brojTelefona: "033/123456" │  ← Vrijednosti polja                           │
+│  │      tipUsluge: "ISDN"          │                                                │
+│  │      ugovor: "24 mjeseca"       │                                                │
+│  │    }                            │                                                │
+│  │  },                             │                                                │
+│  │  output: {                      │                                                │
+│  │    ...strukturirani podaci...   │  ← Za slanje na backend                        │
+│  │  }                              │                                                │
+│  └─────────────────────────────────┘                                                │
+│                                                                                     │
+│  ANALOGIJA: Kao sadržaj Word dokumenta - tekst koji si upisao                       │
+│                                                                                     │
+│  Ako je prazno: Korisnik nije popunio polja forme                                   │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Kutija 3: `structure` - "Za Koga Je Ova Narudžba?"
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KUTIJA 3: structure                                                                │
+│  ──────────────────                                                                 │
+│                                                                                     │
+│  ┌─────────────────────────────────┐                                                │
+│  │  ca: {                          │  ← KORISNIK (Customer Account)                 │
+│  │    id: 130025794,               │     - Ime, prezime                             │
+│  │    customerinfo: {...},         │     - Adresa sjedišta                          │
+│  │    contacts: [...],             │     - Kontakt podaci                           │
+│  │    addresses: [...]             │     - GDPR saglasnost                          │
+│  │  }                              │                                                │
+│  │                                 │                                                │
+│  │  ba: {                          │  ← PRIMAOC RAČUNA (Billing Account)            │
+│  │    id: 330021716,               │     - Ko plaća                                 │
+│  │    billingAddress: "...",       │     - Adresa za račun                          │
+│  │    ptechnologyName: "Fiksna"    │     - Tehnologija                              │
+│  │  }                              │                                                │
+│  │                                 │                                                │
+│  │  sa: {                          │  ← SERVISNI UGOVOR (Service Agreement)         │
+│  │    id: 515653794,               │     - Instalacijska adresa                     │
+│  │    address: "..."               │                                                │
+│  │  }                              │                                                │
+│  │                                 │                                                │
+│  │  contact: {                     │  ← KONTAKT OSOBA                               │
+│  │    id: 45112814,                │     - Koga zvati                               │
+│  │    firstname: "Marko"           │                                                │
+│  │  }                              │                                                │
+│  │                                 │                                                │
+│  │  basket: {                      │  ← KOŠARICA/NARUDŽBA                           │
+│  │    id: 257552,                  │     - Broj narudžbe                            │
+│  │    basketnum: "257550-01/26",   │     - Status                                   │
+│  │    status: "U pripremi",        │     - Komentari                                │
+│  │    comments: "test",            │     - Opis                                     │
+│  │    description: "test"          │                                                │
+│  │  }                              │                                                │
+│  └─────────────────────────────────┘                                                │
+│                                                                                     │
+│  ANALOGIJA: Kao zaglavlje fakture - ko naručuje, ko plaća, adresa dostave           │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Kutija 4: `ordnum` - "Broj Police U Skladištu"
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KUTIJA 4: ordnum                                                                   │
+│  ────────────────                                                                   │
+│                                                                                     │
+│  ┌─────────────────────────────────┐                                                │
+│  │  ordnum: "257550-01/26"         │  ← JEDINSTVENI KLJUČ                           │
+│  └─────────────────────────────────┘                                                │
+│                                                                                     │
+│  ANALOGIJA: Kao broj police u skladištu                                             │
+│                                                                                     │
+│  Kada želiš pronaći kutije, kažeš "Daj mi sve sa police 257550-01/26"               │
+│  Skladištar (baza) pronađe i vrati ti sve 4 kutije                                  │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## D4. Životni Primjer - Referent Na Šalteru
+
+```
+SCENARIO: Referent na šalteru BH Telecoma
+─────────────────────────────────────────
+
+PONEDJELJAK 09:00
+─────────────────
+- Dolazi korisnik Marko Marković
+- Referent otvori JPP aplikaciju
+- Pretraži Marka po JMB-u
+- Počne popunjavati zahtjev za fiksni telefon
+- Unese:
+  - Tip usluge: ISDN
+  - Broj telefona: 033/123-456
+  - Ugovor: 24 mjeseca
+- Klikne "SNIMI"
+
+       │
+       ▼
+
+SUICAPTURE SPASI SVE:
+┌────────────────────────────────────┐
+│  entryParams: processId=10...      │
+│  model: {brojTelefona: "033/..."}  │
+│  structure: {ca: Marko, ba: ...}   │
+│  ordnum: "257550-01/26"            │
+└────────────────────────────────────┘
+       │
+       ▼
+    BAZA PODATAKA
+
+
+PONEDJELJAK 09:15
+─────────────────
+- Marko kaže: "Moram ići, vratiću se sutra"
+- Referent zatvori browser
+- Svi podaci su SAČUVANI u bazi
+
+
+UTORAK 09:00
+────────────
+- Marko se vrati
+- Referent otvori link:
+  /evidencija/residential/1174/162/0?basketnum=257550-01/26
+       │
+       ▼
+
+SUICAPTURE UČITA SVE:
+┌────────────────────────────────────┐
+│  GET /uomback/suicapture/ordnum    │
+│  ?ordnum=257550-01/26              │
+└────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────┐
+│  Vrati sve 4 kutije iz baze        │
+│  Raspakovaj u formu                │
+└────────────────────────────────────┘
+       │
+       ▼
+
+- Forma izgleda IDENTIČNO kao jučer!
+- Sva polja su popunjena
+- Referent nastavi gdje je stao
+- Završi zahtjev
+- Marko dobije telefon
+```
+
+---
+
+## D5. Dijagram Toka - Najjednostavniji Prikaz
+
+```
+         SNIMI                                    OTVORI
+           │                                        │
+           ▼                                        ▼
+    ┌─────────────┐                         ┌─────────────┐
+    │   FORMA     │                         │    URL      │
+    │  (podaci)   │                         │ ?basketnum= │
+    └──────┬──────┘                         └──────┬──────┘
+           │                                        │
+           ▼                                        ▼
+    ┌─────────────┐                         ┌─────────────┐
+    │  SUICAPTURE │ ══════► BAZA ═══════►   │  SUICAPTURE │
+    │    SAVE     │        PODATAKA         │    LOAD     │
+    └─────────────┘                         └──────┬──────┘
+                                                   │
+                                                   ▼
+                                            ┌─────────────┐
+                                            │   FORMA     │
+                                            │  (vraćena)  │
+                                            └─────────────┘
+```
+
+---
+
+## D6. Zašto Se Zove "Suicapture"?
+
+**SUI** = Screen/State User Interface
+**CAPTURE** = Snimanje/Hvatanje
+
+Doslovno: "Snimanje stanja korisničkog interfejsa"
+
+Snima kompletno stanje forme da bi se moglo vratiti kasnije.
+
+---
+
+## D7. Kada Se Suicapture Poziva?
+
+| Akcija | Metoda | Šta Se Dešava |
+|--------|--------|---------------|
+| Prvi "Snimi" | `saveBasket()` → `saveSuicapture()` | Kreira basket, spašava (prazan model) |
+| Drugi "Snimi" | `saveBasket('saveItem')` → `saveSuicapture()` | Ažurira basket, spašava (pun model) |
+| Otvaranje postojećeg | `loadDynamicData()` | Učitava iz suicapture |
+
+---
+
+## D8. API Endpoints
+
+| Endpoint | Metoda | Svrha |
+|----------|--------|-------|
+| `/uomback/suicapture` | POST | Spasi stanje forme |
+| `/uomback/suicapture/ordnum?ordnum=XXX` | GET | Učitaj stanje forme |
+
+---
+
+## D9. Struktura JSON Requesta
+
+```json
+{
+  "languageId": 0,
+  "channel": "",
+  "entity": {
+    "entryParams": "{...}",    // Parametri za učitavanje forme (JSON string)
+    "model": "{...}",          // Vrijednosti forme (JSON string)
+    "structure": "{...}",      // Korisnik/računi/basket (JSON string)
+    "ordnum": "257550-01/26"   // Ključ za pronalaženje
+  }
+}
+```
+
+**Napomena:** `entryParams`, `model` i `structure` su JSON stringovi unutar JSON-a (dvostruka serijalizacija).
+
+---
+
+*Ažurirano: 2026-02-03*
+*Sekcija C: Detaljna Analiza Suicapture Requesta Sa Stvarnim Podacima*
+*Sekcija D: Jednostavno Objašnjenje Sa Analogijom*
