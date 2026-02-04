@@ -3898,6 +3898,1250 @@ Snima kompletno stanje forme da bi se moglo vratiti kasnije.
 
 ---
 
-*Ažurirano: 2026-02-03*
+---
+
+---
+
+# SEKCIJA E: Od getDynamic() Do Korisničkog Unosa - Detaljni Tok
+
+Ovo je detaljno objašnjenje koraka 4-6 u toku forme: API poziv, renderiranje forme, i korisničke interakcije.
+
+---
+
+## E1. Korak 4: getDynamic() → GET /pcrt/order-entry
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KORAK 4: getDynamic() - Učitavanje Strukture Forme                                 │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  evidencija-usluge.component.ts linija 155-170:                                     │
+│                                                                                     │
+│  getDynamic(callback?: any) {                                                       │
+│    // 1. POSTAVI MOD (preview/new/edit/disabled)                                    │
+│    this.db.setmod(                                                                  │
+│      this.ordnum,                    // Ako postoji ordnum → preview                │
+│      this.basketnum,                 // Ako postoji basketnum → edit                │
+│      this.ca.id,                     // Ako postoji CA → new                        │
+│      this.ba.id,                     // Ako postoji BA → new                        │
+│      force?,                         // Forsiran mod                                │
+│      this.patch                      // Patch mod                                   │
+│    );                                                                               │
+│                                                                                     │
+│    // 2. POZOVI API                                                                 │
+│    this.api.get('/pcrt/order-entry', {                                              │
+│      interactionId: 16,                                                             │
+│      productOfferId: this.offerId,           // 1174                                │
+│      productSpecificationId: this.specId,    // 162                                 │
+│      appProcessId: this.processId,           // 10                                  │
+│      setupType: this.setupType                                                      │
+│    }).subscribe((r: RestPayload) => {                                               │
+│                                                                                     │
+│      // 3. SAČUVAJ STRUKTURU                                                        │
+│      this.structure = r.payload;                                                    │
+│                                                                                     │
+│      // 4. AŽURIRAJ PARAMETRE                                                       │
+│      this.db.update(this.db.params, Object.assign(                                  │
+│        this.structure.parameters,            // {type: 100} od backenda             │
+│        this.params,                          // Lokalni parametri                   │
+│        this.setparms()                       // CA_ID, BA_ID, SA_ID...              │
+│      ));                                                                            │
+│                                                                                     │
+│      // 5. POZOVI CALLBACK AKO POSTOJI                                              │
+│      !callback || this[callback]();                                                 │
+│    });                                                                              │
+│  }                                                                                  │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### setparms() - Parametri Koji Se Dodaju
+
+```typescript
+// evidencija-usluge.component.ts linija 189-207
+setparms() {
+  return Object.assign({
+    P_MAIN_OFFER_ID: this.offerId,                          // 1174
+    P_CA_ID: this.ca.id,                                    // 130025794
+    P_BA_ID: this.ba.id,                                    // 330021716
+    P_SA_ID: !this.ia ? this.sa.id : null,                  // 515653794
+    P_SALES_SUB_LOCATION_ID: this.user.getSubSalesLocationId(),
+    P_SALES_LOCATION_ID: this.user.getSalesLocationId(),
+    P_LOGGED_USER: this.user.getName(),
+    P_SALES_CHANNEL: this.user.getChannel(),
+    P_APP_USER: this.user.getUserCode()
+  }, this.basket);                                          // Dodaje i sve iz basket-a
+}
+```
+
+### db.setmod() - Određivanje Moda
+
+```typescript
+// model.service.ts linija 23
+// ['disabled', 'new', 'edit', 'preview'][index]
+public setmod(order?, basket?, ca?, ids?, force?, patch?) {
+  this.patch = patch;
+  this.mod = force || ['disabled', 'new', 'edit', 'preview'][
+    order && basket ? 3 :    // ordnum + basketnum → preview
+    basket ? 2 :             // samo basketnum   → edit
+    ca && ids ? 1 :          // CA + BA          → new
+    0                        // ništa            → disabled
+  ];
+}
+```
+
+### API Response Struktura
+
+```
+{
+  "payload": {
+    "parameters": { "type": 100 },
+    "structure": [                          ← OVO JE NIZ ELEMENATA FORME
+      {
+        "label": "Osnovne usluge",
+        "code": "162",
+        "name": "Osnovneusluge",
+        "dname": "Osnovneusluge1174",
+        "template": "default_block",        ← TIP KOMPONENTE
+        "visible": true,
+        "active": null,
+        "elements": [                       ← CHILD ELEMENTI
+          {
+            "label": "Osnovni paket- Fizicka",
+            "code": "1174",
+            "name": "Osnovnipaket-Fizicka",
+            "template": "basic_block",
+            "inputs": [                     ← INPUT POLJA
+              {
+                "label": "Ime",
+                "code": "FIRSTNAME",
+                "name": "FIRSTNAME",
+                "dname": "FIRSTNAME_1174",
+                "template": "input",
+                "elementType": "text",
+                "visible": true,
+                "disabled": false,
+                "validation": {},
+                "value": {
+                  "data": [],
+                  "generationFormula": "select uomcommon.fgetFirstLastname(#:P_CA_ID#,'FIRSTNAME') from dual"
+                }
+              }
+              // ... više input polja
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## E2. Korak 5: Angular Renderira Formu
+
+### Template Entry Point
+
+```html
+<!-- evidencija-usluge.template.html linija 265-267 -->
+<z-pageloader
+    *ngIf="structure"                    <!-- Renderaj samo ako postoji struktura -->
+    [model]="db.model"                   <!-- Objekt sa vrijednostima forme -->
+    [items]="structure.structure"        <!-- Niz elemenata iz API-ja -->
+    [output]="db.output"                 <!-- Output za backend -->
+    [parameters]="db.params">            <!-- Parametri (CA_ID, BA_ID...) -->
+</z-pageloader>
+```
+
+### Hijerarhija Komponenti
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│  <z-pageloader>                                                                     │
+│  pageloader.template.html:                                                          │
+│  ─────────────────────────                                                          │
+│  <z-contentloader *ngFor="let item of items" ...></z-contentloader>                 │
+│        │                                                                            │
+│        │  Za svaki element u structure.structure kreira ContentLoader               │
+│        │                                                                            │
+│        ▼                                                                            │
+│  <z-contentloader>                                                                  │
+│  contentloader.template.html:                                                       │
+│  ────────────────────────────                                                       │
+│  <span *ngIf="items.active">                                                        │
+│    <z-dlcontent                                                                     │
+│        [template]="items.template"        <!-- "default_block", "input"... -->      │
+│        [inputs]="{                                                                  │
+│          items: items,                    <!-- Element konfiguracija -->            │
+│          model: model,                    <!-- db.model referenca -->               │
+│          parameters: items.parameters,    <!-- Parametri -->                        │
+│          output: output[index]            <!-- Output referenca -->                 │
+│        }">                                                                          │
+│    </z-dlcontent>                                                                   │
+│  </span>                                                                            │
+│        │                                                                            │
+│        ▼                                                                            │
+│  <z-dlcontent>                                                                      │
+│  Dinamički učitava komponentu na osnovu template-a:                                 │
+│  ────────────────────────────────────────────────────                               │
+│  template: "input"         →  InputComponent                                        │
+│  template: "select"        →  SelectComponent                                       │
+│  template: "checkbox"      →  CheckboxComponent                                     │
+│  template: "date"          →  DateComponent                                         │
+│  template: "basic_block"   →  BasicBlockComponent                                   │
+│  template: "default_block" →  DefaultBlockComponent                                 │
+│  template: "textarea"      →  TextareaComponent                                     │
+│  template: "radio"         →  RadioComponent                                        │
+│  template: "AutoComplete"  →  AutoCompleteComponent                                 │
+│  template: "BoxOptions"    →  BoxOptionsComponent                                   │
+│  ...                                                                                │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### ContentLoader ngOnInit() - Ključna Metoda
+
+```typescript
+// contentloader.component.ts linija 26-39
+ngOnInit() {
+  if (this.db.mod != 'preview' && !this.isValid()) return;
+
+  // ★ REDOSLIJED JE KRITIČAN - Ne diraj redoslijed izvršavanja! ★
+
+  // 1. Postavi active flag
+  this.items.active = this.items.active != undefined ? this.items.active : true;
+
+  // 2. Postavi model referencu (povezuje item sa parent modelom)
+  this.db.set(this.model, this.parent, this.pname);
+
+  // 3. Sačuvaj inicijalnu aktivnost
+  if (this.items.initActivity == undefined) {
+    this.items.initActivity = this.items.active ? true : false;
+  }
+
+  // 4. Postavi parametre
+  this.items.set || this.setParametars();
+
+  // 5. Postavi zavisnosti između polja
+  this.Depedency.set(this.items, this.model);
+  this.ValueManager.setDP(this.Depedency);
+
+  // 6. ★★★ POSTAVI POČETNE VRIJEDNOSTI ★★★
+  this.items.template == 'Inputoutput' ||
+    this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  // 7. Dobij index ime za output
+  this.getIndexName();
+
+  // 8. Postavi output strukturu (db.output)
+  this.db.setoutput(this.items, this.model, this.output, this.index);
+
+  // 9. Postavi validaciju
+  this.Validation.set(this.items, this.valid, this.vparent, this.index, this.db.mod);
+}
+```
+
+---
+
+## E3. ValueManager.set() - Postavljanje Početnih Vrijednosti
+
+```typescript
+// value.manager.ts linija 25-33
+public set(el: InputObject, model: any, parameters?: any, mod: string = 'new') {
+
+  // 1. Pozovi external API ako postoji (npr. za tableview)
+  !el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 ||
+    this.setChildren(el, model, parameters);
+
+  // 2. Učitaj poruke ako postoje (notifications)
+  !el.externalMessages || ['disabled', 'preview'].indexOf(mod) >= 0 ||
+    this.setmessages(el, model, parameters);
+
+  // 3. Za select/radio ILI ako model[el.name] nije definisan
+  if (['radio', 'select'].indexOf(el.template) >= 0 || model[el.name] === undefined) {
+
+    // 3a. Ako vrijednost ne postoji, probaj je dobiti:
+    if (model[el.name] === undefined) {
+      this.autoincrement(el, model, parameters) ||          // Auto increment
+      this.setValueByRefOrCode(el, model, parameters) ||    // Iz mappingRef
+      this.setDefaultValue(el, model);                      // defaultValue
+    }
+
+    // 3b. Izvrši generationFormula (SQL upit za vrijednost)
+    this[this.declare(el.value.generationFormula)](
+      el, el.value.generationFormula, model, parameters, model[el.name] ? true : false
+    );
+
+    // 3c. Izvrši lookupStatement (SQL upit za dropdown opcije)
+    this[this.declare(el.value.lookupStatement)](
+      el, el.value.lookupStatement, model, parameters, model[el.name] ? true : false, true
+    );
+  }
+}
+```
+
+### Dijagram: Redoslijed Postavljanja Vrijednosti
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  ValueManager.set() - TOK POSTAVLJANJA VRIJEDNOSTI                                  │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  Element: { name: "FIRSTNAME", value: { generationFormula: "select...P_CA_ID..." }} │
+│                                                                                     │
+│  1. Da li je model["FIRSTNAME"] definisan?                                          │
+│     ├── DA → Preskoči postavljanje                                                  │
+│     └── NE → Nastavi                                                                │
+│                                                                                     │
+│  2. Probaj autoincrement?                                                           │
+│     └── NE (nema autoincrement konfiguracije)                                       │
+│                                                                                     │
+│  3. Probaj mappingRef?                                                              │
+│     └── NE (nema mappingRef)                                                        │
+│                                                                                     │
+│  4. Probaj defaultValue?                                                            │
+│     └── NE (nema defaultValue)                                                      │
+│                                                                                     │
+│  5. Izvrši generationFormula:                                                       │
+│     ┌─────────────────────────────────────────────────────────────────────────┐     │
+│     │  SQL: "select uomcommon.fgetFirstLastname(#:P_CA_ID#,'FIRSTNAME')       │     │
+│     │        from dual"                                                       │     │
+│     │                                                                         │     │
+│     │  Parsira parametre:                                                     │     │
+│     │  #:P_CA_ID# → parameters.P_CA_ID → 130025794                            │     │
+│     │                                                                         │     │
+│     │  API poziv:                                                             │     │
+│     │  POST /uomback/common/lookupStatement                                   │     │
+│     │  { method: "select uomcommon.fgetFirstLastname(130025794,'FIRSTNAME')   │     │
+│     │            from dual" }                                                 │     │
+│     │                                                                         │     │
+│     │  Response: "Marko"                                                      │     │
+│     │                                                                         │     │
+│     │  Rezultat: model["FIRSTNAME"] = "Marko"                                 │     │
+│     └─────────────────────────────────────────────────────────────────────────┘     │
+│                                                                                     │
+│  6. Izvrši lookupStatement (za dropdown opcije)?                                    │
+│     └── NE (input polje nema lookupStatement)                                       │
+│                                                                                     │
+│  REZULTAT: db.model = { auto: {}, Osnovneusluge: { FIRSTNAME: "Marko" } }           │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### declare() - Odrediti Tip SQL Upita
+
+```typescript
+// value.manager.ts linija 67
+private declare(formula: string) {
+  return formula && formula.trim().match(/^select/i) ? 'dblookup' : 'generate';
+}
+
+// Ako formula počinje sa "select" → dblookup (SQL upit)
+// Ako formula počinje sa nečim drugim → generate (API poziv)
+```
+
+### generationFormula vs lookupStatement
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│  generationFormula                        lookupStatement                           │
+│  ─────────────────                        ─────────────────                         │
+│  Vraća JEDNU vrijednost                   Vraća NIZ vrijednosti                     │
+│  (za text input)                          (za select/dropdown)                      │
+│                                                                                     │
+│  Primjer:                                 Primjer:                                  │
+│  "select uomcommon.fgetFirstLastname      "SELECT '0','IMA ADSL/MOJA TV'            │
+│    (#:P_CA_ID#,'FIRSTNAME')                FROM DUAL                                │
+│    from dual"                              UNION                                     │
+│                                            SELECT '1','NEMA ADSL/MOJA TV'           │
+│  Rezultat:                                  FROM DUAL"                              │
+│  model["FIRSTNAME"] = "Marko"                                                       │
+│                                           Rezultat:                                 │
+│                                           el.value.data = [                         │
+│                                             {value: "0", name: "IMA ADSL"},         │
+│                                             {value: "1", name: "NEMA ADSL"}         │
+│                                           ]                                         │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## E4. db.setoutput() - Gradnja Output Strukture
+
+```typescript
+// model.service.ts linija 19-21
+public setoutput(el: InputObject, model: any, output: any, index: string) {
+  el.output = output[index] = output[index]
+    ? Object.assign(output[index], {
+        name: el.name,
+        code: el.code,
+        value: !el.export || model         // Referenca na model
+      })
+    : {                                    // Novi output objekat
+        attr: {},                          // Atributi
+        items: {},                         // Stavke
+        spec: {},                          // Specifikacije
+        name: el.name,
+        code: el.code,
+        value: !el.export || model,        // Referenca na model (ISTI OBJEKAT)
+        active: el.initActivity,
+        calss: el.businessClassification,  // "SPECIFICATION", "OFFER", "Attribute"
+        businessParams: el.businessParams,
+        label: el.label,
+        elementType: el.elementType,
+        dataReference: el.dataReference
+      };
+}
+```
+
+---
+
+## E5. Korak 6: Korisnik Popunjava Formu - ngModel Binding
+
+### Input Template
+
+```html
+<!-- input.template.html -->
+<input
+    [id]="items.dname"                                        <!-- FIRSTNAME_1174 -->
+    [name]="items.dname"                                      <!-- FIRSTNAME_1174 -->
+    [(ngModel)]="model[items.name]"                           <!-- ★ DVOSMJERNO POVEZIVANJE ★ -->
+    [disabled]="items.disabled?'disabled':'false'"
+    [readonly]="items.disabled?'readonly':false"
+    [required]="items.validation.mandatory ? model[items.name] ? false:true:false"
+    [pattern]="items.validation.formatPattern ? items.validation.formatPattern:''"
+    [type]="items.elementType || 'text'"
+    (focusout)="Validation.validate(items, parameters);"      <!-- Validacija na izlazu -->
+    (change)="Depedency.depend(items.dname);"                 <!-- Zavisnosti na promjeni -->
+/>
+```
+
+### Tok Kada Korisnik Unese Vrijednost
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KORISNIK UPISUJE "033/123-456" U POLJE TELEFON                                     │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  1. Browser detektira promjenu u <input>                                            │
+│     │                                                                               │
+│     ▼                                                                               │
+│  2. Angular [(ngModel)] binding:                                                    │
+│     model["TELEFON"] = "033/123-456"                                                │
+│     │                                                                               │
+│     │  Pošto je model referenca na db.model.Osnovneusluge:                          │
+│     │  db.model.Osnovneusluge.TELEFON = "033/123-456"                               │
+│     │                                                                               │
+│     ▼                                                                               │
+│  3. (change) event:                                                                 │
+│     Depedency.depend("TELEFON_1174")                                                │
+│     │                                                                               │
+│     │  Provjeri da li neko polje zavisi od TELEFON                                  │
+│     │  Ako da, ažuriraj ta polja                                                    │
+│     │                                                                               │
+│     ▼                                                                               │
+│  4. (focusout) event:                                                               │
+│     Validation.validate(items, parameters)                                          │
+│     │                                                                               │
+│     │  Validiraj:                                                                   │
+│     │  - mandatory: Da li je popunjeno?                                             │
+│     │  - formatPattern: Da li format odgovara?                                      │
+│     │  - minValue/maxValue: Da li je u opsegu?                                      │
+│     │                                                                               │
+│     ▼                                                                               │
+│  5. Stanje nakon unosa:                                                             │
+│                                                                                     │
+│     db.model = {                                                                    │
+│       auto: {},                                                                     │
+│       Osnovneusluge: {                                                              │
+│         FIRSTNAME: "Marko",         // Učitano iz baze (generationFormula)          │
+│         NAME: "Marković",           // Učitano iz baze (generationFormula)          │
+│         TELEFON: "033/123-456"      // ★ UPRAVO UNESENO OD KORISNIKA ★             │
+│       }                                                                             │
+│     }                                                                               │
+│                                                                                     │
+│     db.output = {                                                                   │
+│       Osnovneusluge: {                                                              │
+│         attr: {},                                                                   │
+│         items: {},                                                                  │
+│         spec: {},                                                                   │
+│         name: "Osnovneusluge",                                                      │
+│         code: "162",                                                                │
+│         value: db.model.Osnovneusluge,  // ← REFERENCA NA ISTI OBJEKAT              │
+│         active: true,                                                               │
+│         calss: "SPECIFICATION"                                                      │
+│       }                                                                             │
+│     }                                                                               │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## E6. Reference - Zašto Output Automatski "Vidi" Korisničke Promjene
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  KAKO REFERENCE RADE                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  MEMORIJA:                                                                          │
+│                                                                                     │
+│  ┌──────────────────────────────────────────────────────────┐                       │
+│  │  OBJEKAT @ 0x12345 (db.model.Osnovneusluge)              │                       │
+│  │  {                                                       │                       │
+│  │    FIRSTNAME: "Marko",                                   │                       │
+│  │    NAME: "Marković",                                     │                       │
+│  │    TELEFON: "033/123-456"                                │                       │
+│  │  }                                                       │                       │
+│  └──────────────────────────────────────────────────────────┘                       │
+│         ▲                    ▲                    ▲                                 │
+│         │                    │                    │                                 │
+│    ┌────┴────┐          ┌────┴────┐          ┌────┴────┐                            │
+│    │  model  │          │ output  │          │ input   │                            │
+│    │ (param) │          │ .value  │          │ ngModel │                            │
+│    └─────────┘          └─────────┘          └─────────┘                            │
+│                                                                                     │
+│  SVE TRI REFERENCE POKAZUJU NA ISTI OBJEKAT!                                        │
+│                                                                                     │
+│  Kada korisnik promijeni input:                                                     │
+│  ngModel → model["TELEFON"] = "novi" → OBJEKAT @ 0x12345 se mijenja                 │
+│                                                                                     │
+│  Kada čitamo output.value.TELEFON:                                                  │
+│  → čitamo iz ISTOG OBJEKTA @ 0x12345                                                │
+│  → vraća "novi"                                                                     │
+│                                                                                     │
+│  Ovo je zašto saveSuicapture() može da čita db.output                               │
+│  i automatski dobije najnovije korisničke unose!                                     │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## E7. Kompletan Dijagram: Od API Response Do Korisničkog Unosa
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│  API RESPONSE                    ANGULAR RENDERIRANJE              KORISNIK         │
+│  ────────────                    ────────────────────              ────────         │
+│                                                                                     │
+│  structure: [                                                                       │
+│    {                                                                                │
+│      name: "Osnovneusluge",      ──────►  <z-contentloader>                         │
+│      template: "default_block",                  │                                  │
+│      elements: [                                 │                                  │
+│        {                                         ▼                                  │
+│          name: "OsnovniPaket",   ──────►  <z-contentloader>                         │
+│          template: "basic_block",                │                                  │
+│          inputs: [                               │                                  │
+│            {                                     ▼                                  │
+│              name: "FIRSTNAME",  ──────►  <z-contentloader>                         │
+│              template: "input",                  │                                  │
+│              value: {                            │                                  │
+│                generationFormula:                ▼                                  │
+│                "select...P_CA_ID"    ─────►  ValueManager.set()                     │
+│              }                                   │                                  │
+│            }                                     │  API: lookupStatement            │
+│          ]                                       ▼                                  │
+│        }                                    model["FIRSTNAME"] = "Marko"            │
+│      ]                                           │                                  │
+│    }                                             ▼                                  │
+│  ]                                      <input [(ngModel)]="model['FIRSTNAME']">    │
+│                                                  │                                  │
+│                                                  │  Prikaz: "Marko"                 │
+│                                                  │                                  │
+│                                                  ▼                                  │
+│                                         [Korisnik upisuje "Ivan"]                   │
+│                                                  │                                  │
+│                                                  ▼                                  │
+│                                         model["FIRSTNAME"] = "Ivan"                 │
+│                                                  │                                  │
+│                                                  ▼                                  │
+│                                         db.model.Osnovneusluge.FIRSTNAME = "Ivan"   │
+│                                                  │                                  │
+│                                                  ▼                                  │
+│                                         output.Osnovneusluge.value = isti objekat    │
+│                                         → FIRSTNAME automatski "Ivan"               │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## E8. Dependency Sistem
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  DEPENDENCY - Zavisnosti Između Polja                                                │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  Iz API response-a (element ima dependency polje):                                  │
+│                                                                                     │
+│  {                                                                                  │
+│    "name": "Osnovnipaket-Fizicka",                                                  │
+│    "dependency": [{                                                                 │
+│      "element": "loadOffer162",           // Zavisi od ovog elementa                │
+│      "effect": "active",                  // Efekt: aktivira/deaktivira             │
+│      "elementValue": ["1174"],            // Kada element ima vrijednost 1174       │
+│      "effectData": {}                                                               │
+│    }]                                                                               │
+│  }                                                                                  │
+│                                                                                     │
+│  Tok:                                                                               │
+│  Korisnik odaberi "1174" u loadOffer162 dropdown                                    │
+│       │                                                                             │
+│       ▼                                                                             │
+│  (change) event → Depedency.depend("loadOffer162")                                  │
+│       │                                                                             │
+│       ▼                                                                             │
+│  Provjeri sve elemente koji zavise od "loadOffer162"                                │
+│       │                                                                             │
+│       ▼                                                                             │
+│  "Osnovnipaket-Fizicka" zavisi od "loadOffer162"                                    │
+│  elementValue odgovara ["1174"]                                                     │
+│       │                                                                             │
+│       ▼                                                                             │
+│  Izvrši efekt "active" → Osnovnipaket-Fizicka postaje AKTIVAN                       │
+│  Forma renderuje input polja za taj paket                                           │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## E9. DLContent - Dinamičko Renderiranje Komponenti
+
+```typescript
+// dlcontent.ts linija 55-81
+// Mapa template ime → index u Components nizu:
+export const key = {
+  basic_block: 0,         // Osnovni blok (sa inputs)
+  default_block: 1,       // Default blok (container)
+  checkblock: 2,          // Check blok
+  standard_popup: 3,      // Popup
+  switchtab: 4,           // Switch tab
+  form: 5,                // Form
+  button: 6,              // Button
+  checkbox: 7,            // Checkbox
+  input: 8,               // Text input ★
+  number: 8,              // Number input (isti kao input)
+  readonly: 8,            // Readonly input (isti kao input)
+  popbutton: 9,           // Pop button
+  radio: 10,              // Radio button
+  select: 11,             // Select dropdown ★
+  textarea: 12,           // Textarea
+  date: 13,               // Date picker
+  tableview: 14,          // Table
+  grid: 15,               // Grid
+  PriceBlock: 17,         // Price block
+  navigator: 18,          // Navigator
+  Notification: 20,       // Notification poruka
+  CheckboxAD: 22,         // Checkbox aktivan/deaktivan
+  AutoComplete: 25,       // Autocomplete
+  BoxOptions: 26          // Box options
+};
+
+// Renderiranje:
+updateComponent() {
+  let component = Components[key[this.template]];    // Pronađi komponentu
+  let factory = this.cfResolver.resolveComponentFactory(component);
+  this.cmpRef = this.target.createComponent(factory); // Dinamički kreiraj
+  Object.assign(this.cmpRef.instance, this.inputs);   // Predaj inputs
+  this.cdRef.detectChanges();                         // Trigeri change detection
+}
+```
+
+---
+
+---
+
+# SEKCIJA F: Pojednostavljeno Objašnjenje Za Junior Programere
+
+## Uvod: Šta Ćemo Naučiti?
+
+Zamislite da pravite video igru gdje igrač može:
+1. **Učitati praznu igru** (nova forma)
+2. **Igrati** (popunjavati formu)
+3. **Save Game** (saveSuicapture - spasiti stanje)
+4. **Load Game** (loadSuicapture - učitati stanje)
+
+Ova sekcija objašnjava **kako igra zna šta da spasi i kako da to vrati**.
+
+---
+
+## F1. TRI KUTIJE - Osnova Svega
+
+Zamislite da imate **tri kutije** na stolu:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│   KUTIJA 1: db.model                KUTIJA 2: db.output             │
+│   ═══════════════════               ═══════════════════             │
+│   "RADNI PROSTOR"                   "KUTIJA ZA SLANJE"              │
+│                                                                     │
+│   Ovdje korisnik piše.              Ovdje spakujemo sve             │
+│   Svako polje forme ima             za backend.                     │
+│   svoje mjesto ovdje.                                               │
+│                                                                     │
+│   {                                 {                               │
+│     FIRSTNAME: "Marko",               Osnovneusluge: {              │
+│     LASTNAME: "Marković",               value: → pokazuje na        │
+│     TELEFON: "033-123"                          KUTIJU 1!           │
+│   }                                   }                             │
+│                                     }                               │
+│                                                                     │
+│                                                                     │
+│   KUTIJA 3: db.params                                               │
+│   ═══════════════════                                               │
+│   "KONSTANTE / PARAMETRI"                                           │
+│                                                                     │
+│   Stvari koje se NE MIJENJAJU tokom popunjavanja forme:             │
+│   {                                                                 │
+│     P_CA_ID: 130025794,     ← ID kupca                              │
+│     P_BA_ID: 330021716,     ← ID računa                             │
+│     type: 100               ← Tip kupca (100 = fizičko lice)        │
+│   }                                                                 │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### KLJUČNA STVAR: Kutija 2 POKAZUJE na Kutiju 1!
+
+To znači:
+- Kada korisnik upiše nešto u formu → ide u Kutiju 1
+- Kutija 2 automatski "vidi" promjenu jer gleda u Kutiju 1
+- Ne trebamo ništa kopirati!
+
+---
+
+## F2. KORAK PO KORAK: Šta Se Dešava?
+
+### KORAK 1: Korisnik Otvori Formu
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  KORISNIK KLIKNE "NOVA USLUGA"                                      │
+│                                                                     │
+│  Angular zove: getDynamic()                                         │
+│       │                                                             │
+│       ▼                                                             │
+│  Šalje upit na backend:                                             │
+│  "Daj mi strukturu forme za ponudu 1174"                            │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### KORAK 2: Backend Vraća "Recept Za Formu"
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  BACKEND VRAĆA:                                                     │
+│                                                                     │
+│  "Trebaš ova polja:"                                                │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  Polje: IME                                                 │    │
+│  │  Tip: input (tekstualno polje)                              │    │
+│  │  Početna vrijednost: izvuci iz baze pomoću SQL-a            │    │
+│  │    → "select ime from kupci where id = 130025794"           │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  Polje: PREZIME                                             │    │
+│  │  Tip: input                                                 │    │
+│  │  Početna vrijednost: isto iz baze                           │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  Polje: TARIFNI_PAKET                                       │    │
+│  │  Tip: select (dropdown)                                     │    │
+│  │  Opcije: izvuci iz baze                                     │    │
+│  │    → "select id, naziv from tarifni_paketi"                 │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### KORAK 3: Angular Crta Formu
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Angular prolazi kroz svako polje i:                                │
+│                                                                     │
+│  ZA SVAKO POLJE:                                                    │
+│  ═══════════════                                                    │
+│                                                                     │
+│  1. Napravi mjesto u db.model za to polje                           │
+│     db.model.IME = ""                                               │
+│                                                                     │
+│  2. Izvrši SQL za početnu vrijednost                                │
+│     SQL vraća "Marko" → db.model.IME = "Marko"                      │
+│                                                                     │
+│  3. Poveži input polje sa db.model                                  │
+│     <input [(ngModel)]="db.model.IME">                              │
+│                                                                     │
+│  4. Napravi referencu u db.output                                   │
+│     db.output.Osnovneusluge.value = db.model  ← ISTA KUTIJA!        │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### KORAK 4: Korisnik Popunjava Formu
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                    FORMA NA EKRANU                          │    │
+│  │  ┌────────────────────────────────────────────────────┐     │    │
+│  │  │  Ime:     [  Marko  ]  ← već popunjeno iz baze     │     │    │
+│  │  │  Prezime: [ Marković]  ← već popunjeno iz baze     │     │    │
+│  │  │  Telefon: [033-123-456] ← KORISNIK UPISAO          │     │    │
+│  │  │  Paket:   [ Premium ▼ ] ← KORISNIK ODABRAO         │     │    │
+│  │  └────────────────────────────────────────────────────┘     │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+│  Šta se dešava kada korisnik upiše "033-123-456"?                   │
+│                                                                     │
+│     Korisnik tipka ─────────►  <input>                              │
+│                                    │                                │
+│                                    │  [(ngModel)]                   │
+│                                    ▼                                │
+│                              db.model.TELEFON = "033-123-456"       │
+│                                    │                                │
+│                                    │  (ista memorija)               │
+│                                    ▼                                │
+│                              db.output.value.TELEFON = "033-123-456"│
+│                              (automatski, jer pokazuje na isto!)    │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F3. SAVE GAME - saveSuicapture()
+
+Sada dolazi ključni dio - **kako suicapture SPAŠAVA stanje**.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  KORISNIK KLIKNE "SPASI"                                            │
+│                                                                     │
+│  saveSuicapture() radi sljedeće:                                    │
+│                                                                     │
+│  1. UZMI SVE IZ db.output                                           │
+│     ─────────────────────                                           │
+│     db.output sadrži:                                               │
+│     - value → pokazuje na db.model (sve korisničke vrijednosti)     │
+│     - struktura (koja polja postoje)                                │
+│     - aktivnost (šta je uključeno/isključeno)                       │
+│                                                                     │
+│  2. PRETVORI U JSON STRING                                          │
+│     ─────────────────────                                           │
+│     JSON.stringify(db.output) →                                     │
+│     '{"Osnovneusluge":{"value":{"IME":"Marko","TELEFON":"033"}}}'   │
+│                                                                     │
+│  3. POŠALJI NA BACKEND                                              │
+│     ─────────────────────                                           │
+│     POST /uomback/sui-capture                                       │
+│     {                                                               │
+│       "ticketId": 12345,        ← ID tiketa                         │
+│       "eventData": "...JSON..." ← Spakovani db.output               │
+│     }                                                               │
+│                                                                     │
+│  4. BACKEND SPASI U BAZU                                            │
+│     ─────────────────────                                           │
+│     Tabela SUI_CAPTURE:                                             │
+│     ┌──────────┬─────────────────────────────────────────┐          │
+│     │ ticketId │ eventData                               │          │
+│     ├──────────┼─────────────────────────────────────────┤          │
+│     │ 12345    │ {"Osnovneusluge":{"value":{...}}}       │          │
+│     └──────────┴─────────────────────────────────────────┘          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Zašto Ovo Radi?
+
+```
+ZATO ŠTO output.value POKAZUJE NA ISTI OBJEKAT KAO model!
+
+Kada zovemo JSON.stringify(db.output):
+  → Ulazi u db.output
+  → Nalazi output.value
+  → output.value pokazuje na db.model
+  → Čita SVE IZ db.model (uključujući korisničke unose)
+  → Pretvara u string
+
+REZULTAT: Sve što je korisnik upisao je spakovano!
+```
+
+---
+
+## F4. LOAD GAME - loadSuicapture()
+
+Sada učitavamo spašeno stanje.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  KORISNIK PONOVO OTVORI ISTI TIKET                                  │
+│                                                                     │
+│  loadSuicapture() radi sljedeće:                                    │
+│                                                                     │
+│  1. DOHVATI IZ BAZE                                                 │
+│     ─────────────────────                                           │
+│     GET /uomback/sui-capture?ticketId=12345                         │
+│     → Vraća: '{"Osnovneusluge":{"value":{"IME":"Marko",...}}}'      │
+│                                                                     │
+│  2. PRETVORI NAZAD U OBJEKAT                                        │
+│     ─────────────────────                                           │
+│     JSON.parse(eventData) →                                         │
+│     { Osnovneusluge: { value: { IME: "Marko", TELEFON: "033" } } }  │
+│                                                                     │
+│  3. POSTAVI U db.output                                             │
+│     ─────────────────────                                           │
+│     db.output = parsiraniObjekat                                    │
+│                                                                     │
+│  4. KOPIRAJ VRIJEDNOSTI U db.model                                  │
+│     ─────────────────────                                           │
+│     Za svako polje u output.value:                                  │
+│       db.model.IME = output.Osnovneusluge.value.IME                 │
+│       db.model.TELEFON = output.Osnovneusluge.value.TELEFON         │
+│       ...                                                           │
+│                                                                     │
+│  5. ANGULAR AUTOMATSKI AŽURIRA FORMU                                │
+│     ─────────────────────                                           │
+│     Pošto je <input [(ngModel)]="db.model.IME">                     │
+│     i db.model.IME sada ima vrijednost "Marko"                      │
+│     → Input polje prikazuje "Marko"                                 │
+│                                                                     │
+│  REZULTAT: Forma izgleda IDENTIČNO kao kad je korisnik spasio!      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F5. JEDNOSTAVNA ANALOGIJA: Knjiga Gostiju
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ZAMISLITE HOTEL SA KNJIGOM GOSTIJU                                 │
+│                                                                     │
+│  1. NOVA REZERVACIJA (getDynamic)                                   │
+│     ────────────────────────────                                    │
+│     Recepcioner otvara prazan formular:                             │
+│     "Ime: _____, Prezime: _____, Soba: _____"                       │
+│                                                                     │
+│     Ali već zna neke podatke o gostu (iz baze):                     │
+│     "Ime: Marko, Prezime: Marković, Soba: _____"                    │
+│                                                                     │
+│  2. GOST POPUNJAVA (korisnik unosi)                                 │
+│     ────────────────────────────                                    │
+│     Gost odabere sobu 305.                                          │
+│     Formular sada: "Ime: Marko, Prezime: Marković, Soba: 305"       │
+│                                                                     │
+│  3. KNJIGA GOSTIJU - SAVE (saveSuicapture)                          │
+│     ────────────────────────────                                    │
+│     Recepcioner prepiše formular u Knjigu Gostiju:                  │
+│     Strana 12345: "Marko Marković, Soba 305"                        │
+│                                                                     │
+│  4. GOST SE VRATI - LOAD (loadSuicapture)                           │
+│     ────────────────────────────                                    │
+│     Gost se vrati za godinu dana.                                   │
+│     Recepcioner otvori Knjigu Gostiju, strana 12345.                │
+│     Prepopuni formular: "Ime: Marko, Prezime: Marković, Soba: 305"  │
+│                                                                     │
+│     Gost vidi: "Opa, sjećaju se moje omiljene sobe!"                │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F6. ZAŠTO "REFERENCE" A NE KOPIRANJE?
+
+Ovo je najvažniji dio za razumjeti.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  PRIMJER SA SVAKODNEVNOG ŽIVOTA                                     │
+│                                                                     │
+│  KOPIRANJE (loše):                                                  │
+│  ═════════════════                                                  │
+│  Imaš bilješku na frižideru: "Kupi mlijeko"                         │
+│  Napraviš FOTOKOPIJU i staviš u torbu.                              │
+│  Ako neko promijeni bilješku na frižideru na "Kupi hljeb",          │
+│  tvoja kopija u torbi DALJE PIŠE "Kupi mlijeko"!                    │
+│                                                                     │
+│  Problem: Informacije nisu sinhronizovane.                          │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  REFERENCA (kako mi radimo):                                        │
+│  ════════════════════════════                                       │
+│  Imaš bilješku na frižideru: "Kupi mlijeko"                         │
+│  Staviš papirić u torbu: "Pogledaj frižider"                        │
+│  Ako neko promijeni bilješku na frižideru na "Kupi hljeb",          │
+│  ti pogledaš frižider i vidiš "Kupi hljeb"!                         │
+│                                                                     │
+│  Prednost: Uvijek imaš najnoviju informaciju.                       │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+U KODU:
+
+  // KOPIRANJE (loše):
+  db.output.value = { IME: db.model.IME };  // Kopira vrijednost
+  // Ako se db.model.IME promijeni, db.output.value.IME OSTAJE STARO
+
+  // REFERENCA (kako mi radimo):
+  db.output.value = db.model;  // POKAZUJE na isti objekat
+  // Ako se db.model.IME promijeni, db.output.value.IME SE AUTOMATSKI PROMIJENI
+  // Jer je TO ISTI OBJEKAT!
+```
+
+---
+
+## F7. DIJAGRAM: KOMPLETAN TOK (Jednostavno)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  1. OTVORI FORMU                                                            │
+│     ════════════                                                            │
+│     [Korisnik klikne] → getDynamic() → Backend vraća strukturu              │
+│                                              │                              │
+│                                              ▼                              │
+│                              ┌───────────────────────────────┐              │
+│                              │  "Trebaš polja: IME, PREZIME" │              │
+│                              └───────────────────────────────┘              │
+│                                              │                              │
+│                                              ▼                              │
+│  2. NACRTAJ FORMU                                                           │
+│     ═════════════                                                           │
+│     Za svako polje:                                                         │
+│       - Izvrši SQL za početnu vrijednost                                    │
+│       - Napravi <input> povezan sa db.model                                 │
+│       - Napravi referencu u db.output → db.model                            │
+│                                              │                              │
+│                                              ▼                              │
+│  3. KORISNIK POPUNJAVA                                                      │
+│     ═════════════════════                                                   │
+│     Korisnik tipka → db.model se mijenja → db.output automatski vidi        │
+│                                              │                              │
+│                                              ▼                              │
+│  4. SAVE (saveSuicapture)                                                   │
+│     ═════════════════════                                                   │
+│     Uzmi db.output → JSON.stringify → Pošalji na backend → Spasi u bazu     │
+│                                                                             │
+│  ═══════════════════════════════════════════════════════════════════════    │
+│                                                                             │
+│  5. LOAD (loadSuicapture) - Kasnije                                         │
+│     ══════════════════════════════════                                      │
+│     Dohvati iz baze → JSON.parse → Postavi u db.output i db.model           │
+│                                              │                              │
+│                                              ▼                              │
+│     Angular vidi promjenu db.model → Automatski ažurira input polja         │
+│                                              │                              │
+│                                              ▼                              │
+│     Forma izgleda isto kao kada je spašena!                                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F8. CHECKLIST: Šta Junior Treba Zapamtiti
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ✅ KLJUČNE STVARI ZA ZAPAMTITI                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. TRI KUTIJE:                                                     │
+│     □ db.model  → Ovdje su vrijednosti koje korisnik unosi          │
+│     □ db.output → Ovdje je struktura za slanje na backend           │
+│     □ db.params → Ovdje su konstante (CA_ID, BA_ID...)              │
+│                                                                     │
+│  2. REFERENCA, NE KOPIJA:                                           │
+│     □ db.output.value POKAZUJE na db.model                          │
+│     □ Promjena u db.model automatski vidljiva u db.output           │
+│                                                                     │
+│  3. getDynamic():                                                   │
+│     □ Dohvata strukturu forme sa backenda                           │
+│     □ Backend kaže koja polja postoje i kako popuniti početne       │
+│                                                                     │
+│  4. saveSuicapture():                                               │
+│     □ Uzima db.output (koji pokazuje na db.model)                   │
+│     □ Pretvara u JSON string                                        │
+│     □ Šalje na backend za čuvanje                                   │
+│                                                                     │
+│  5. loadSuicapture():                                               │
+│     □ Dohvata JSON string iz baze                                   │
+│     □ Pretvara nazad u objekat                                      │
+│     □ Postavlja vrijednosti u db.model                              │
+│     □ Angular automatski ažurira formu                              │
+│                                                                     │
+│  6. ngModel BINDING:                                                │
+│     □ [(ngModel)]="db.model.IME" znači:                             │
+│       - Prikaži vrijednost db.model.IME u inputu                    │
+│       - Kada korisnik tipka, ažuriraj db.model.IME                  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F9. NAJČEŠĆE GREŠKE I KAKO IH IZBJEĆI
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ❌ GREŠKA 1: Misliti da se vrijednosti kopiraju                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│  POGREŠNO: "db.output ima kopiju vrijednosti"                       │
+│  ISPRAVNO: "db.output.value POKAZUJE na db.model, isti objekat"     │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  ❌ GREŠKA 2: Ne razumjeti redoslijed                                │
+│  ─────────────────────────────────────────────────────────────────  │
+│  POGREŠNO: "Prvo nacrtaj formu, pa dohvati strukturu"               │
+│  ISPRAVNO: "Prvo dohvati strukturu, pa nacrtaj formu na osnovu nje" │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  ❌ GREŠKA 3: Miješati model i params                                │
+│  ─────────────────────────────────────────────────────────────────  │
+│  POGREŠNO: "P_CA_ID je u db.model"                                  │
+│  ISPRAVNO: "P_CA_ID je u db.params - to su PARAMETRI, ne unos"      │
+│            "FIRSTNAME je u db.model - to KORISNIK POPUNJAVA"        │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  ❌ GREŠKA 4: Ne razumjeti JSON.stringify                            │
+│  ─────────────────────────────────────────────────────────────────  │
+│  JSON.stringify PRATI REFERENCE!                                    │
+│  Kada stringify-uješ db.output, on ulazi u output.value,            │
+│  vidi da pokazuje na db.model, i stringify-uje TAJ objekat.         │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F10. PRAKTIČNI PRIMJER: Korak Po Korak
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  SCENARIO: Marko otvara tiket, popunjava formu, spašava,            │
+│            sutradan nastavlja                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  DAN 1 - 10:00 - OTVARANJE                                          │
+│  ═════════════════════════════                                      │
+│  Marko klikne "Novi tiket" za kupca Ivana (CA_ID: 12345)            │
+│                                                                     │
+│  → getDynamic() pozvan                                              │
+│  → Backend vraća: "Trebaš polja: IME, PREZIME, TELEFON"             │
+│  → Angular crta formu                                               │
+│  → SQL upiti popune: IME="Ivan", PREZIME="Horvat"                   │
+│  → Forma prikazuje:                                                 │
+│    ┌──────────────────────────────────────┐                         │
+│    │  Ime:     [ Ivan    ]                │                         │
+│    │  Prezime: [ Horvat  ]                │                         │
+│    │  Telefon: [         ]   ← PRAZNO     │                         │
+│    └──────────────────────────────────────┘                         │
+│                                                                     │
+│  DAN 1 - 10:05 - POPUNJAVANJE                                       │
+│  ═══════════════════════════════                                    │
+│  Marko upiše telefon: "091-234-5678"                                │
+│                                                                     │
+│  → Korisnik tipka u <input>                                         │
+│  → ngModel ažurira: db.model.TELEFON = "091-234-5678"               │
+│  → db.output.value automatski ima istu vrijednost                   │
+│    (jer pokazuje na db.model)                                       │
+│                                                                     │
+│  DAN 1 - 10:10 - SAVE                                               │
+│  ═══════════════════════                                            │
+│  Marko klikne "Spasi" jer mora ići na pauzu                         │
+│                                                                     │
+│  → saveSuicapture() pozvan                                          │
+│  → Uzima db.output                                                  │
+│  → JSON.stringify pretvori u:                                       │
+│    '{"Osnovneusluge":{"value":{"IME":"Ivan","PREZIME":"Horvat",     │
+│      "TELEFON":"091-234-5678"}}}'                                   │
+│  → Pošalje na backend                                               │
+│  → Backend spasi u tabelu SUI_CAPTURE                               │
+│                                                                     │
+│  DAN 2 - 09:00 - LOAD                                               │
+│  ════════════════════════                                           │
+│  Marko ponovo otvori isti tiket                                     │
+│                                                                     │
+│  → loadSuicapture() pozvan                                          │
+│  → Dohvati iz baze: '{"Osnovneusluge":{"value":{...}}}'             │
+│  → JSON.parse pretvori nazad u objekat                              │
+│  → Postavi u db.model:                                              │
+│    db.model.IME = "Ivan"                                            │
+│    db.model.PREZIME = "Horvat"                                      │
+│    db.model.TELEFON = "091-234-5678"                                │
+│  → Angular detektuje promjenu                                       │
+│  → Forma automatski prikaže:                                        │
+│    ┌──────────────────────────────────────┐                         │
+│    │  Ime:     [ Ivan        ]            │                         │
+│    │  Prezime: [ Horvat      ]            │                         │
+│    │  Telefon: [ 091-234-5678]   ← SAČUVANO!                        │
+│    └──────────────────────────────────────┘                         │
+│                                                                     │
+│  Marko: "Super, sve je tu! Mogu nastaviti gdje sam stao."           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## F11. ZAKLJUČAK
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│  SUICAPTURE U JEDNOJ REČENICI:                                      │
+│  ═════════════════════════════                                      │
+│  "Spašava kompletno stanje forme (db.output koji pokazuje na        │
+│   db.model) u bazu kao JSON string, i vraća ga nazad kad treba."    │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  ZAŠTO RADI EFIKASNO:                                               │
+│  ════════════════════                                               │
+│  - Reference umjesto kopiranja = manje memorije, uvijek ažurno      │
+│  - JSON stringify/parse = jednostavno spašavanje/učitavanje         │
+│  - Angular ngModel = automatsko ažuriranje UI-a                     │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  KADA BI NEŠTO POŠLO PO ZLU:                                        │
+│  ═══════════════════════════                                        │
+│  - Ako bi referenca bila prekinuta → save bi spasio stare podatke   │
+│  - Ako bi JSON bio korumpiran → load bi pukao                       │
+│  - Ako bi db.model bio prazan pri save → spasili bismo praznu formu │
+│                                                                     │
+│  Ali pošto je sve ispravno povezano - RADI!                         │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+*Ažurirano: 2026-02-04*
 *Sekcija C: Detaljna Analiza Suicapture Requesta Sa Stvarnim Podacima*
 *Sekcija D: Jednostavno Objašnjenje Sa Analogijom*
+*Sekcija E: Od getDynamic() Do Korisničkog Unosa - Detaljni Tok*
+*Sekcija F: Pojednostavljeno Objašnjenje Za Junior Programere*
