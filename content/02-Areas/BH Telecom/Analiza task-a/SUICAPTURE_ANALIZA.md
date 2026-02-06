@@ -7,6 +7,7 @@
 4. [SEKCIJA B: Model](#sekcija-b-model)
 5. [SEKCIJA C: Structure](#sekcija-c-structure-korisniciraČuni)
 6. [Kompletni dijagram izvora podataka](#kompletni-dijagram-izvora-podataka)
+7. [SEKCIJA H: Kako Radi /uomback/suicapture - Kompletno Objašnjenje](#sekcija-h-kako-radi-uombacksuicapture---kompletno-objašnjenje)
 
 ---
 
@@ -5140,8 +5141,3472 @@ U KODU:
 
 ---
 
-*Ažurirano: 2026-02-04*
+# SEKCIJA G: ZAŠTO JE db.model PRAZAN NA PRVI SAVE? (BY DESIGN)
+
+## G1. PREGLED - OVO JE NAMJERNO DIZAJNIRANO
+
+Prazan model na prvom `save()` **NIJE BUG** - to je **намјерно ponašanje** sistema.
+
+### Zašto je dizajnirano ovako:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  PRIJE PRVOG SAVE:  db.mod = "disabled" → forma je SIVA, READONLY    │
+│                     Model sadrži defaultne vrijednosti               │
+│                     ALI te vrijednosti su NEPOTPUNE                  │
+│                     (ValueManager preskače API pozive u disabled)    │
+│                                                                      │
+│  PRVI SAVE:         assignObjects() RESETIRA model na {auto:{}}     │
+│                     getDynamic() ponovo dohvata formu                │
+│                     db.mod = "new" → forma postaje EDITABILNA        │
+│                     saveSuicapture() šalje prazan model (placeholder)│
+│                                                                      │
+│  NAKON PRVOG SAVE:  ContentLoader-i se reinicijaliziraju u "new" modu│
+│                     Model se popuni sa KOMPLETNIM podacima           │
+│                     Korisnik može unijeti podatke                    │
+│                                                                      │
+│  DRUGI SAVE:        saveSuicapture() šalje POPUNJEN model           │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Ključna linija koda:**
+
+**File:** `evidencija-usluge.component.ts`, linija 307
+```typescript
+if (firstsave) { this.basket.save = true; this.assignObjects(); this.getDynamic() }
+```
+
+---
+
+## G2. FAZA 1: INICIJALNI LOAD STRANICE (PRIJE prvog save-a)
+
+```
+URL: /evidencija/residential/1174/162/0?processId=10&caId=130025794&baId=330021716
+     (nema basketnum u URL-u)
+
+ngOnInit() [linija 81]
+│
+├─ this.basket = {}                          // basket.save = undefined
+├─ this.assignObjects()                      // db.model = {auto: {}}
+│                                              db.output = {}
+│
+├─ linija 94: this.basketnum = undefined (nema u URL-u)
+│   └─ false || this.getDynamic('validateinformations')
+│
+└─ getDynamic() [linija 185]
+    │
+    ├─ db.setmod(undefined, undefined, 130025794, 330021716,
+    │            !this.basket.save ? "disabled" : ..., ...)
+    │   └─ !basket.save = !undefined = true
+    │   └─ force = "disabled"
+    │   └─ db.mod = "disabled"  ← FORMA JE SIVA!
+    │
+    ├─ GET /pcrt/order-entry ──── ASYNC ────┐
+    │                                        │
+    │   ┌─────────────────────────────────────┘
+    │   │ Response stiže (~200ms)
+    │   │
+    │   ├─ this.structure = r.payload       // struktura forme
+    │   │
+    │   └─ Angular renderira z-pageloader
+    │       └─ *ngIf="structure" → TRUE
+    │       └─ [ngClass]="{inactive:!db.mod||db.mod=='disabled'}"
+    │           └─ CSS klasa "inactive" se primjenjuje
+    │           └─ FORMA JE SIVA, KORISNIK NE MOŽE UPISIVATI!
+    │
+    └─ ContentLoader komponente SE INICIJALIZIRAJU u "disabled" modu:
+        │
+        ├─ ContentLoader.ngOnInit() [contentloader.component.ts:26-54]
+        │   └─ linija 27: if(this.db.mod!='preview' && !this.isValid()) return;
+        │       └─ db.mod = "disabled", isValid() = true → NASTAVLJA
+        │
+        ├─ ValueManager.set() [value.manager.ts:25-33] sa mod = "disabled":
+        │   │
+        │   ├─ linija 26: !el.externalAPI || ['disabled','preview'].indexOf(mod) >= 0 || ...
+        │   │   └─ mod = "disabled" → indexOf() vraća 0
+        │   │   └─ 0 || ... → PRESKAČE setChildren()  ← KLJUČNO!
+        │   │
+        │   ├─ linija 27: !el.externalMessages || ['disabled','preview'].indexOf(mod) >= 0 || ...
+        │   │   └─ mod = "disabled" → indexOf() vraća 0
+        │   │   └─ 0 || ... → PRESKAČE setmessages()  ← KLJUČNO!
+        │   │
+        │   └─ linija 29: setDefaultValue() → postavlja samo defaultne vrijednosti
+        │
+        ├─ db.model.Osnovneusluge = {}
+        ├─ db.model.loadOffer162 = "1174"  (defaultValue iz structure)
+        └─ db.model["Osnovnipaket-Fizicka"] = { /* samo defaultne vrijednosti */ }
+            └─ active = false (dependency nije ispunjen)
+            └─ setChildren() NIJE pozvan → child elementi nisu dohvaćeni
+            └─ setmessages() NIJE pozvan → validacione poruke nisu dohvaćene
+```
+
+### Problem sa "disabled" modom:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  U "disabled" modu, ValueManager.set() PRESKAČE:                   │
+│                                                                    │
+│  1. setChildren(el, model, parameters)                             │
+│     → Ne dohvata child elemente iz backenda                        │
+│     → db.model nema kompletnu hijerarhiju                          │
+│                                                                    │
+│  2. setmessages(el, model, parameters)                             │
+│     → Ne dohvata validacione poruke                                │
+│     → Ne dohvata statusne poruke (SERVICE_INFO, CHECK_USER, itd.)  │
+│                                                                    │
+│  3. dblookup/generate formule (linija 30-31)                       │
+│     → PRESKAČE ako je mod = "disabled" && !db.patch                │
+│     → Ne izvršava SQL lookup-e                                     │
+│     → Ne generira dinamičke vrijednosti                            │
+│                                                                    │
+│  REZULTAT: Model je NEPOTPUN i sadrži samo default vrijednosti     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## G3. FAZA 2: KORISNIK KLIKNE "SPASI" (prvi put)
+
+```
+Korisnik vidi sivu formu i klikne SPASI dugme
+(bez upisivanja podataka jer forma je disabled)
+
+save() [linija 284]
+│
+├─ basket.id = undefined → nema basket-a
+└─ return this.saveBasket()  BEZ callback-a [linija 290]
+
+saveBasket() [linija 299-315]
+│
+├─ firstsave = true  (jer basket.id ne postoji) [linija 302]
+│
+├─ POST /uomback/basket/save [linija 305] ──── ASYNC ────┐
+│                                                          │
+│  ┌───────────────────────────────────────────────────────┘
+│  │ Response stiže sa novim basket ID-jem
+│  │
+│  ├─ if (firstsave) { ... } [linija 307] → ULAZI U IF BLOK
+│  │
+│  │  ┌─────────────────────────────────────────────────────────────┐
+│  │  │ (1) this.basket.save = true                                 │
+│  │  │     └─ Postavlja flag da je basket kreiran                  │
+│  │  │                                                             │
+│  │  │ (2) this.assignObjects()  ← *** KLJUČNA LINIJA ***          │
+│  │  │     └─ this.structure = {}        // BRIŠE form structure   │
+│  │  │     └─ db.model = {auto: {}}      // BRIŠE SVE iz modela!   │
+│  │  │     └─ db.output = {}             // BRIŠE SVE iz outputa!  │
+│  │  │     └─ Dependency.clear()         // BRIŠE dependency       │
+│  │  │                                                             │
+│  │  │     RAZLOG: Model iz "disabled" moda je NEPOTPUN!          │
+│  │  │     Mora se resetirati i reinicijalizirati u "new" modu.   │
+│  │  │                                                             │
+│  │  │ (3) this.getDynamic()             ← PONOVO dohvata formu    │
+│  │  │     └─ db.setmod(..., basket.save=true, ...)               │
+│  │  │         └─ !basket.save = !true = false                    │
+│  │  │         └─ force NIJE "disabled"                           │
+│  │  │         └─ ca && ids → mod = "new"  ← FORMA POSTAJE AKTIVA │
+│  │  │                                                             │
+│  │  │     └─ GET /pcrt/order-entry ──── ASYNC ────┐              │
+│  │  │                                              │ (čeka)       │
+│  │  └─────────────────────────────────────────────│──────────────┘
+│  │                                                 │
+│  ├─ Object.assign(this.basket, r.payload)         │
+│  │   └─ basket dobija: id, basketnum, status, ... │
+│  │                                                 │
+│  └─ this.saveSuicapture() [linija 311]            │
+│      │                                             │
+│      └─ ŠALJE db.model ODMAH!                      │
+│         model: "{\"model\":{\"auto\":{}},\"output\":{}}"
+│         │                                          │
+│         └─ PRAZAN jer assignObjects() ga OBRISAO!  │
+│            getDynamic() JOŠ ČEKA response ─────────┘
+```
+
+### Zašto saveSuicapture() šalje prazan model?
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  Timeline:                                                         │
+│                                                                    │
+│  T0: assignObjects() → db.model = {auto: {}}                       │
+│  T1: getDynamic() pokrenut → GET /pcrt/order-entry (ASYNC)        │
+│  T2: saveSuicapture() pozvan → šalje db.model = {auto: {}}        │
+│      ↑                                                             │
+│      └─ OVDJE JE db.model JOŠ PRAZAN                               │
+│                                                                    │
+│  T3: /pcrt/order-entry response stiže (~300ms kasnije)            │
+│  T4: ContentLoader-i se inicijaliziraju u "new" modu              │
+│  T5: db.model se POPUNI sa kompletnim podacima                    │
+│                                                                    │
+│  saveSuicapture() na T2 se izvršava PRIJE nego /pcrt/order-entry  │
+│  response stigne na T3. To je race condition, ALI je намјеран.     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## G4. FAZA 3: FORMA SE REINICIJALIZIRA U "new" MODU
+
+```
+GET /pcrt/order-entry response stiže (~300ms NAKON saveSuicapture)
+│
+├─ this.structure = r.payload
+│
+├─ Template: *ngIf="structure" → z-pageloader se PONOVO renderira
+│   └─ [ngClass]="{inactive:!db.mod||db.mod=='disabled'}"
+│       └─ db.mod = "new" → NEMA CSS klase "inactive"
+│       └─ FORMA JE SADA AKTIVNA, KORISNIK MOŽE UPISIVATI!
+│
+└─ ContentLoader komponente se REINICIJALIZIRAJU sa db.mod = "new":
+    │
+    ├─ ValueManager.set() [value.manager.ts:25-33] sa mod = "new":
+    │   │
+    │   ├─ linija 26: !el.externalAPI || ['disabled','preview'].indexOf(mod) >= 0 || ...
+    │   │   └─ mod = "new" → indexOf() vraća -1
+    │   │   └─ -1 || setChildren() → IZVRŠAVA setChildren()!  ← RAZLIKA!
+    │   │       └─ Dohvata child elemente iz backenda
+    │   │
+    │   ├─ linija 27: !el.externalMessages || ['disabled','preview'].indexOf(mod) >= 0 || ...
+    │   │   └─ mod = "new" → indexOf() vraća -1
+    │   │   └─ -1 || setmessages() → IZVRŠAVA setmessages()!  ← RAZLIKA!
+    │   │       └─ Dohvata validacione poruke (SERVICE_INFO, CHECK_USER, ...)
+    │   │
+    │   ├─ linija 29: setDefaultValue() → postavlja default vrijednosti
+    │   │
+    │   ├─ linija 30-31: dblookup/generate
+    │   │   └─ IZVRŠAVA SQL lookup-e
+    │   │   └─ Generira dinamičke vrijednosti
+    │   │
+    │   └─ mappingreference → Povlači reference podatke
+    │
+    ├─ db.model se POPUNI sa KOMPLETNIM podacima:
+    │   ├─ db.model.Osnovneusluge = {}
+    │   ├─ db.model.loadOffer162 = "1174"
+    │   └─ db.model["Osnovnipaket-Fizicka"] = {
+    │         SERVICE_INFO: {status: "1", message: "..."},
+    │         FIRSTNAME: null,  ← čeka unos korisnika
+    │         NAME: null,
+    │         DEFAULTCONTACTPHONE: null,
+    │         // + SVE child specifikacije:
+    │         Tarifnipaketi: {},
+    │         Zabranainformacija: {},
+    │         Preuzimanja: {},
+    │         // ...itd
+    │       }
+    │
+    └─ Korisnik sada vidi AKTIVNU formu i može unijeti podatke
+```
+
+### Razlika: "disabled" vs "new" mod
+
+| API/Funkcija | disabled mod | new mod |
+|---|---|---|
+| `setChildren()` | ❌ PRESKAČE | ✅ IZVRŠAVA |
+| `setmessages()` | ❌ PRESKAČE | ✅ IZVRŠAVA |
+| `dblookup/generate` | ❌ PRESKAČE | ✅ IZVRŠAVA |
+| `mappingreference` | ⚠️ Parcijalno | ✅ Potpuno |
+| Forma editabilna? | ❌ NE (siva) | ✅ DA |
+
+---
+
+## G5. FAZA 4: KORISNIK UNOSI PODATKE I KLIKNE "SPASI" PONOVO
+
+```
+Korisnik unosi podatke u formu:
+├─ FIRSTNAME: "JNF-8241"
+├─ NAME: "JNF-8241"
+├─ DEFAULTCONTACTPHONE: "1111"
+├─ DEFAULTCONTACTEMAIL: "omar.bilalovic@gmail.com"
+└─ Čekira neke checkbox-e (Zabrana za imenik, itd.)
+
+Angular ngModel automatski ažurira db.model:
+└─ db.model["Osnovnipaket-Fizicka"].FIRSTNAME = "JNF-8241"
+└─ db.model["Osnovnipaket-Fizicka"].NAME = "JNF-8241"
+└─ db.model["Osnovnipaket-Fizicka"].DEFAULTCONTACTPHONE = "1111"
+└─ ... itd.
+
+Korisnik klikne SPASI ponovo
+│
+save() [linija 284]
+│
+├─ basket.id = 257699 → basket POSTOJI!
+└─ else blok [linija 291]:
+    └─ cb = this.structure.validation ? 'validateAndSave' : 'saveItem'
+    └─ return this.saveBasket(cb)  SA callback-om
+
+saveBasket(cb) [linija 299-315]
+│
+├─ firstsave = false  (jer basket.id POSTOJI) [linija 302]
+│
+├─ POST /uomback/basket/save [linija 305] ──── ASYNC ────┐
+│                                                          │
+│  ┌───────────────────────────────────────────────────────┘
+│  │
+│  ├─ if (firstsave) { ... } [linija 307]
+│  │   └─ firstsave = false → PRESKAČE IF BLOK!
+│  │       └─ NEMA assignObjects() → model se NE BRIŠE
+│  │       └─ NEMA getDynamic() → forma se NE resetira
+│  │
+│  ├─ Object.assign(this.basket, r.payload)
+│  │
+│  └─ this.saveSuicapture() [linija 311]
+│      │
+│      └─ ŠALJE db.model KOJI JE SADA POPUNJEN!
+│         model: "{\"model\":{\"auto\":{},\"Osnovneusluge\":{},
+│                  \"loadOffer162\":\"1174\",
+│                  \"Osnovnipaket-Fizicka\":{
+│                    \"FIRSTNAME\":\"JNF-8241\",
+│                    \"NAME\":\"JNF-8241\",
+│                    \"DEFAULTCONTACTPHONE\":\"1111\",
+│                    ...
+│                  }},
+│                 \"output\":{...}}"
+│
+└─ callback() [linija 312]
+    └─ Poziva saveItem() ili validateAndSave()
+    └─ Šalje podatke u backend za realizaciju
+```
+
+---
+
+## G6. UPOREDNA TABLICA: DVA SAVE-a
+
+| | **PRVI SAVE** | **DRUGI SAVE** |
+|---|---|---|
+| **URL parametar** | Nema `basketnum` | Nema `basketnum` (isti URL) |
+| **basket.id** | `undefined` | `257699` |
+| **firstsave** | `true` | `false` |
+| **callback parametar** | `undefined` | `"validateAndSave"` ili `"saveItem"` |
+| **Linija 307 (if blok)** | ✅ **IZVRŠAVA SE** | ❌ **PRESKAČE SE** |
+| **assignObjects()** | ✅ DA - briše db.model | ❌ NE - model ostaje |
+| **getDynamic()** | ✅ DA - ali ASYNC | ❌ NE |
+| **db.mod PRIJE save** | `"disabled"` (siva forma) | `"new"` (aktivna forma) |
+| **db.mod NAKON save** | `"new"` (ali KASNIJE) | `"new"` (ostaje isti) |
+| **db.model sadržaj** | `{auto: {}}` (prazan) | `{auto:{}, Osnovneusluge:{}, loadOffer162:"1174", ...}` (popunjen) |
+| **saveSuicapture()** | Šalje prazan model | Šalje popunjen model |
+| **Backend akcija** | INSERT u SUI_CAPTURE (placeholder) | UPDATE u SUI_CAPTURE (stvarni podaci) |
+| **callback()** | ❌ NE - nema callback-a | ✅ DA - poziva saveItem() |
+
+---
+
+## G7. REZIME - ZAŠTO JE OVO BY DESIGN?
+
+### 3 GLAVNA RAZLOGA:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  RAZLOG 1: Model iz "disabled" moda je NEPOTPUN                    │
+│  ══════════════════════════════════════════════                    │
+│  ValueManager.set() u "disabled" modu PRESKAČE:                    │
+│  - setChildren() → ne dohvata child elemente                       │
+│  - setmessages() → ne dohvata poruke/validacije                    │
+│  - dblookup/generate → ne izvršava SQL formule                     │
+│                                                                    │
+│  Zato se model MORA resetirati i reinicijalizirati u "new" modu.  │
+└────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────┐
+│  RAZLOG 2: Prazan suicapture KREIRA placeholder u bazi             │
+│  ═══════════════════════════════════════════════════              │
+│  Kad backend primi prazan model:                                   │
+│  - INSERT u SUI_CAPTURE tabelu sa ordnum = basketnum              │
+│  - Status = "1" (aktivan)                                          │
+│  - model = "{\"model\":{\"auto\":{}},\"output\":{}}"               │
+│                                                                    │
+│  Ovaj red služi kao placeholder dok korisnik unosi podatke.       │
+│  Drugi save ga AŽURIRA (UPDATE) sa pravim podacima.                │
+└────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────┐
+│  RAZLOG 3: Forma se mora reinicijalizirati čista                   │
+│  ═══════════════════════════════════════════════                  │
+│  assignObjects() + getDynamic() sa db.mod="new" osigurava:        │
+│  - Sve reference se postave ispravno                               │
+│  - Dependency-ji se re-evaluiraju                                  │
+│  - Validacije se postave za editabilni mod                         │
+│  - Output struktura se kreira ispravno (attr/items/spec)          │
+│                                                                    │
+│  Ovo osigurava čisto stanje prije nego korisnik počne unos.       │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## G8. KOD REFERENCE - KLJUČNE FUNKCIJE
+
+### 1. assignObjects() - Resetira model
+
+**File:** `evidencija-usluge.component.ts`, linija 129
+```typescript
+assignObjects() {
+  this.Dependency.clear();
+  this.structure = {};
+  this.db.clear(['active', 'activechild'])
+    .assign("model", { auto: {} })  // ← BRIŠE sve iz modela
+    .assign("output")               // ← BRIŠE sve iz outputa
+    .assign("params")
+    .assign("valid", { name: "evidencija", active: true, valid: true, errors: 0, children: {} });
+}
+```
+
+**Zašto resetira?** Jer model iz "disabled" moda je NEPOTPUN (setChildren i setmessages nisu izvršeni).
+
+---
+
+### 2. saveBasket() - Kontrolni flow prvog i drugog save-a
+
+**File:** `evidencija-usluge.component.ts`, linija 299-315
+```typescript
+saveBasket(callback?: string) {
+  let firstsave: boolean = this.basket.id ? false : true;  // ← detektuje prvi save
+
+  this.api.post('/uomback/basket/save', this.setBasket()).subscribe((r: RestPayload) => {
+
+    if (firstsave) {                    // ← IZVRŠAVA SE SAMO NA PRVOM SAVE-u
+      this.basket.save = true;          // 1. postavi flag
+      this.assignObjects();             // 2. RESETIRA db.model = {auto:{}}
+      this.getDynamic()                 // 3. dohvati formu ponovo (ASYNC)
+    }
+
+    Object.assign(this.basket, r.payload);  // postavi basket.id, basketnum
+
+    // Linija 311 - KLJUČNA:
+    this.saveSuicapture();              // 4. šalje trenutno stanje modela
+
+    return callback ?
+      !this.db.valid.errors ? this[callback]() : this.message.warning(...) :
+      this.message.success('Zahtjev uspješno snimljen!');
+  });
+}
+```
+
+**Timing problem na prvom save-u:**
+- `getDynamic()` je ASINHRONI (linija 307) - pokreće GET request
+- `saveSuicapture()` je SINHRONI (linija 311) - izvršava se odmah
+- Rezultat: suicapture šalje prazan model JER getDynamic() još nije završio
+
+---
+
+### 3. getDynamic() - Dohvata formu i postavlja db.mod
+
+**File:** `evidencija-usluge.component.ts`, linija 181-196
+```typescript
+getDynamic(callback?: any) {
+  // Postavi db.mod na osnovu basket.save flaga
+  this.db.setmod(
+    this.ordnum,
+    this.basketnum,
+    this.ca.id,
+    this.ba.id,
+    !this.basket.save ? "disabled" : undefined,  // ← KLJUČNA LINIJA
+    this.patch
+  );
+  // Ako !this.basket.save = true → force="disabled" → db.mod="disabled"
+  // Ako !this.basket.save = false → force=undefined → db.mod="new" (jer ca && ids)
+
+  // ASINHRONI poziv - čeka response
+  this.api.get('/pcrt/order-entry', {
+    productOfferId: this.offerId,
+    productSpecificationId: this.specId,
+    appProcessId: this.processId
+  }).subscribe((r: RestPayload) => {
+    this.structure = r.payload;
+    this.db.update(this.db.params, ...);
+    // Angular automatski renderira z-pageloader jer *ngIf="structure"
+    // ContentLoader-i se inicijaliziraju sa db.mod
+  });
+}
+```
+
+**db.mod logika (model.service.ts, linija 23):**
+```typescript
+public setmod(order?, basket?, ca?, ids?, force?, patch?) {
+  this.mod = force || ['disabled', 'new', 'edit', 'preview'][
+    order && basket ? 3 :  // 'preview'
+    basket ? 2 :            // 'edit'
+    ca && ids ? 1 :         // 'new'
+    0                       // 'disabled'
+  ];
+}
+```
+
+---
+
+### 4. ValueManager.set() - Razlika između "disabled" i "new" moda
+
+**File:** `z-dynamic/services/value.manager.ts`, linija 25-33
+```typescript
+public set(el: InputObject, model: any, parameters?: any, mod: string = 'new') {
+
+  // Linija 26 - setChildren provjera:
+  !el.externalAPI ||
+  ['disabled', 'preview'].indexOf(mod) >= 0 ||
+  this.setChildren(el, model, parameters);
+
+  // Ako mod = "disabled": indexOf() vraća 0 (truthy) → SHORT CIRCUIT → setChildren SE PRESKAČE
+  // Ako mod = "new": indexOf() vraća -1 (falsy) → NASTAVLJA → setChildren SE IZVRŠAVA
+
+  // Linija 27 - setmessages provjera:
+  !el.externalMessages ||
+  !el.externalMessages.length ||
+  ['disabled', 'preview'].indexOf(mod) >= 0 ||
+  this.setmessages(el, model, parameters);
+
+  // Ista logika - preskače u "disabled" modu, izvršava u "new" modu
+
+  // Linija 28-32 - default value, lookup, generation:
+  if (['radio', 'select'].indexOf(el.template) >= 0 || model[el.name] === undefined) {
+    if (model[el.name] === undefined)
+      this.autoincrement(el, model, parameters) ||
+      this.setValueByRefOrCode(el, model, parameters) ||
+      this.setDefaultValue(el, model);
+
+    // Linija 30 - generation formula:
+    !el.value ||
+    ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch ||
+    this[this.declare(el.value.generationFormula)](el, ...);
+
+    // U "disabled" modu (bez patch): generationFormula SE PRESKAČE
+    // U "new" modu: generationFormula SE IZVRŠAVA
+  }
+}
+```
+
+**setChildren() - dohvata child elemente:**
+```typescript
+public setChildren(el: InputObject, model: any, parameters?: any) {
+  let ApiQuery: any = this.ApiParse.parse(el.externalAPI, model, parameters);
+  this.ApiDispatcher.set(ApiQuery).call((response: any) => {
+    el.template == "tableview" ?
+      model[el.name + 'tableview'] = response :
+      el.elements = response['structure'] || response;
+  });
+}
+```
+
+**setmessages() - dohvata statusne/validacione poruke:**
+```typescript
+private setmessages(el: InputObject, model: any, parameters?: any) {
+  let ApiQuery: any = this.ApiParse.parse(el.externalMessages, model, parameters, ...);
+  this.ApiDispatcher.set(...).call((response: any) => {
+    this.handlemessages(el, model, response);
+  });
+}
+```
+
+---
+
+### 5. ContentLoader.ngOnInit() - Inicijalizacija komponente
+
+**File:** `z-dynamic/components/z-dynamicloader/z-contentloader/contentloader.component.ts`, linija 26-54
+```typescript
+ngOnInit() {
+  // Linija 27 - provjera validnosti:
+  if(this.db.mod != 'preview' && !this.isValid()) return;
+  // Ako je mod = "disabled", ali isValid() = true, NASTAVLJA (ne vraća se rano)
+
+  // Postavi aktivnost:
+  this.items.active = this.items.active != undefined ? this.items.active : true;
+
+  // Postavi model reference:
+  this.db.set(this.model, this.parent, this.pname);
+
+  // Postavi parametre:
+  this.items.set || this.setParametars();
+
+  // Postavi dependency:
+  this.Depedency.set(this.items, this.model);
+  this.ValueManager.setDP(this.Depedency);
+
+  // KLJUČNO - ValueManager.set() sa db.mod parametrom:
+  this.items.template == 'Inputoutput' ||
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+  //                                                                      ↑
+  //                                                    db.mod = "disabled" ili "new"
+
+  // Kreiraj output entry:
+  this.getIndexName();
+  this.db.setoutput(this.items, this.model, this.output, this.index);
+
+  // Postavi validaciju:
+  this.Validation.set(this.items, this.valid, this.vparent, this.index, this.db.mod);
+}
+```
+
+---
+
+### 6. Template - Kontrola prikaza forme
+
+**File:** `evidencija-usluge.template.html`, linija 265
+```html
+<z-pageloader
+  [ngClass]="{inactive:!db.mod||db.mod=='disabled'}"
+  *ngIf="structure"
+  [model]="db.model"
+  [items]="structure.structure"
+  [output]="db.output"
+  [vparent]="db.valid"
+  [valid]="db.valid.children"
+  [parameters]="db.params">
+</z-pageloader>
+```
+
+**CSS klasa "inactive":**
+- Kada `db.mod == "disabled"`: forma je siva, korisnik ne može upisivati
+- Kada `db.mod == "new"`: forma je aktivna, korisnik može upisivati
+
+---
+
+## G9. SCENARIO A - STVARNI PODACI IZ TEST ENVIRONMENT-A
+
+### Prvi suicapture (PRAZAN):
+
+**Request:**
+```json
+{
+  "entryParams": "{\"processId\":\"10\",\"offerId\":\"1174\",\"specId\":\"162\"}",
+  "model": "{\"model\":{\"auto\":{}},\"output\":{}}",
+  "structure": "{\"ca\":{...},\"ba\":{...},\"sa\":{...},\"contact\":{...},\"basket\":{...}}",
+  "ordnum": "257697-01/26"
+}
+```
+
+**Response:**
+```json
+{
+  "id": 53097,
+  "ordnum": "257697-01/26",
+  "model": "{\"model\":{\"auto\":{}},\"output\":{}}",
+  "created": "2026-02-05T19:43:21.401",
+  "createdBy": "kenansa",
+  "status": "1"
+}
+```
+
+---
+
+### Drugi suicapture (POPUNJEN):
+
+**Request** (korisnik je unio podatke):
+```json
+{
+  "entryParams": "{\"processId\":\"10\",\"offerId\":\"1174\",\"specId\":\"162\"}",
+  "model": "{\"model\":{\"auto\":{},\"Osnovneusluge\":{},\"loadOffer162\":\"1174\",\"Osnovnipaket-Fizicka\":{\"SERVICE_INFO\":{\"status\":\"1\",\"message\":\"...\"},\"FIRSTNAME\":\"JNF-8241\",\"NAME\":\"JNF-8241\",\"DEFAULTCONTACTPHONE\":\"1111\",\"DEFAULTCONTACTEMAIL\":\"omar.bilalovic@gmail.com\",...}},\"output\":{\"Osnovneusluge\":{\"attr\":{},\"items\":{\"Osnovnipaket-Fizicka\":{\"attr\":{\"FIRSTNAME\":{\"attvalue\":\"JNF-8241\",...},...},...}},...}}}",
+  "structure": "{\"ca\":{...},\"ba\":{...},\"sa\":{...},\"contact\":{...},\"basket\":{...}}",
+  "ordnum": "257697-01/26"
+}
+```
+
+**Response:**
+```json
+{
+  "id": 53097,
+  "ordnum": "257697-01/26",
+  "model": "{\"model\":{\"auto\":{},\"Osnovneusluge\":{},\"loadOffer162\":\"1174\",\"Osnovnipaket-Fizicka\":{...}},\"output\":{...}}",
+  "modified": "2026-02-05T19:44:29.273",
+  "modifiedBy": "kenansa",
+  "status": "1"
+}
+```
+
+**Razlika:**
+- Prvi save: INSERT u bazu (prazan model, `created` timestamp)
+- Drugi save: UPDATE u bazi (popunjen model, `modified` timestamp)
+
+---
+
+## G10. DETALJNO OBJAŠNJENJE db.setmod() - EVALUACIJA PARAMETARA
+
+Ova sekcija objašnjava **kako se evaluira** `db.setmod()` poziv u `getDynamic()` metodi.
+
+### Poziv u kontekstu:
+
+**File:** `evidencija-usluge.component.ts`, linija 185
+```typescript
+this.db.setmod(
+  this.ordnum,      // undefined
+  this.basketnum,   // undefined
+  this.ca.id,       // 130025794
+  this.ba.id,       // 330021716
+  !this.basket.save ? "disabled" : ...,   // force parametar
+  this.patch
+);
+```
+
+### Definicija setmod() funkcije:
+
+**File:** `model.service.ts`, linija 23
+```typescript
+public setmod(
+  order?: string,
+  basket?: string,
+  ca?: number,
+  ids?: number,
+  force?: string,
+  patch?: string
+) {
+  this.patch = patch;
+  this.mod = force || ['disabled', 'new', 'edit', 'preview'][
+    order && basket ? 3 :
+    basket ? 2 :
+    ca && ids ? 1 :
+    0
+  ];
+}
+```
+
+---
+
+### Korak-po-korak evaluacija PRIJE prvog save-a:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ STANJE PRIJE PRVOG SAVE:                                            │
+│ ═══════════════════════                                             │
+│ this.ordnum = undefined                                             │
+│ this.basketnum = undefined                                          │
+│ this.ca.id = 130025794                                              │
+│ this.ba.id = 330021716                                              │
+│ this.basket = {}  →  basket.save = undefined                        │
+│ this.patch = undefined                                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+KORAK 1: Evaluacija 5. parametra (force):
+═══════════════════════════════════════════
+
+!this.basket.save ? "disabled" : ...
+
+1a) this.basket.save
+    └─ undefined
+
+1b) !this.basket.save
+    └─ !undefined
+    └─ true              ← undefined je FALSY vrijednost
+
+1c) true ? "disabled" : ...
+    └─ "disabled"        ← Vraća lijevu stranu (true branch)
+
+✓ force = "disabled"
+
+
+KORAK 2: Poziv funkcije sa evaluiranim argumentima:
+═══════════════════════════════════════════════════
+
+setmod(undefined, undefined, 130025794, 330021716, "disabled", undefined)
+       ↓          ↓          ↓           ↓          ↓           ↓
+     order     basket       ca         ids       force       patch
+
+
+KORAK 3: Unutar setmod() funkcije:
+═══════════════════════════════════
+
+3a) this.patch = patch;
+    └─ this.patch = undefined
+
+
+3b) this.mod = force || ['disabled', 'new', 'edit', 'preview'][...]
+
+    Evaluacija:
+
+    force           →  "disabled"
+    "disabled" || X →  "disabled"  (short circuit - ne evaluira desnu stranu)
+
+    ✓ this.mod = "disabled"
+
+
+REZULTAT:
+════════
+
+db.mod = "disabled"
+db.patch = undefined
+```
+
+---
+
+### NAKON prvog save-a (druga evaluacija):
+
+Kada korisnik klikne **Spasi** prvi put:
+
+**File:** `evidencija-usluge.component.ts`, linija 307
+```typescript
+if (firstsave) {
+  this.basket.save = true;      // ← OVDJE SE POSTAVLJA!
+  this.assignObjects();
+  this.getDynamic()
+}
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ STANJE NAKON PRVOG SAVE (pri pozivu getDynamic()):                  │
+│ ═════════════════════════════════════════════════                   │
+│ this.ordnum = "257697-01/26"    ← SET od strane saveBasket()        │
+│ this.basketnum = "257697/26"    ← SET od strane saveBasket()        │
+│ this.ca.id = 130025794                                              │
+│ this.ba.id = 330021716                                              │
+│ this.basket.save = true         ← SET u saveBasket() prije getDyn() │
+│ this.patch = undefined                                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+KORAK 1: Evaluacija 5. parametra (force):
+═══════════════════════════════════════════
+
+!this.basket.save ? "disabled" : ...
+
+1a) this.basket.save
+    └─ true
+
+1b) !this.basket.save
+    └─ !true
+    └─ false             ← true je TRUTHY vrijednost
+
+1c) false ? "disabled" : ...
+    └─ ...               ← Vraća desnu stranu (false branch)
+    └─ Ostali ternary izrazi se evaluiraju (nije bitno za sada)
+
+✓ force = undefined
+
+
+KORAK 2: Poziv funkcije:
+════════════════════════
+
+setmod("257697-01/26", "257697/26", 130025794, 330021716, undefined, undefined)
+       ↓               ↓            ↓           ↓          ↓          ↓
+     order          basket         ca         ids       force      patch
+
+
+KORAK 3: Unutar setmod() funkcije:
+═══════════════════════════════════
+
+3a) this.patch = patch;
+    └─ this.patch = undefined
+
+
+3b) this.mod = force || ['disabled', 'new', 'edit', 'preview'][...]
+
+    Evaluacija:
+
+    force              →  undefined
+    undefined || X     →  evaluira desnu stranu (undefined je falsy)
+
+    Desna strana:
+    ['disabled', 'new', 'edit', 'preview'][order && basket ? 3 : basket ? 2 : ca && ids ? 1 : 0]
+
+    Ternary chain evaluacija:
+
+    Korak 3b-1: order && basket
+                "257697-01/26" && "257697/26"
+                truthy && truthy
+                → "257697/26" (vraća desnu truthy vrijednost)
+                → truthy
+
+    Korak 3b-2: order && basket ? 3 : ...
+                truthy ? 3 : ...
+                → 3
+
+    Korak 3b-3: ['disabled', 'new', 'edit', 'preview'][3]
+                → 'preview'
+
+    ✓ this.mod = "preview"
+
+
+REZULTAT:
+════════
+
+db.mod = "preview"
+db.patch = undefined
+```
+
+---
+
+### Sažetak logike:
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│  LOGIKA db.setmod():                                                  │
+│  ═══════════════════                                                  │
+│                                                                       │
+│  db.mod = force || ['disabled', 'new', 'edit', 'preview'][index]     │
+│                                                                       │
+│  Ako je force definiran → koristi force                              │
+│  Ako nije → odaberi iz niza prema indeksu:                           │
+│                                                                       │
+│    index = order && basket ? 3 :     ← Oba postoje? → 3 ("preview")  │
+│            basket ? 2 :              ← Samo basket? → 2 ("edit")     │
+│            ca && ids ? 1 :           ← CA i BA postoje? → 1 ("new")  │
+│            0                         ← Ništa? → 0 ("disabled")       │
+│                                                                       │
+│  PRIJE PRVOG SAVE:                                                    │
+│  ────────────────                                                     │
+│  basket.save = undefined → force = "disabled" → db.mod = "disabled"   │
+│                                                                       │
+│  NAKON PRVOG SAVE:                                                    │
+│  ─────────────────                                                    │
+│  basket.save = true → force = undefined                              │
+│  order && basket = truthy → index = 3 → db.mod = "preview"           │
+│                                                                       │
+│  ALI! U praksi, nakon prvog save getDynamic() se poziva SA            │
+│  basketnum definiranim, što znači da bi trebalo biti "preview".       │
+│  Međutim, možda postoji drugi poziv koji ga postavlja na "new"...    │
+│  (Ovo bi trebalo dodatno istražiti u debugger-u)                     │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+### Ključne spoznaje:
+
+1. **|| operator evaluacija:**
+   - `force || array[index]`
+   - Ako je `force` truthy → vraća `force`
+   - Ako je `force` falsy (undefined, null, false, "", 0) → vraća `array[index]`
+
+2. **Ternary chain evaluacija:**
+   - Evaluira se **slijeva nadesno**
+   - Prvi `true` uslov završava evaluaciju
+   - Vraća odgovarajuću vrijednost
+
+3. **basket.save flag:**
+   - Kontrolira `force` parametar
+   - `undefined` → force = "disabled"
+   - `true` → force = undefined (koristi array lookup)
+
+---
+
+## G11. DETALJNO OBJAŠNJENJE || (OR) OPERATORA I SHORT CIRCUIT EVALUACIJE
+
+Ovaj operator je **ključan** za razumijevanje kako radi `ValueManager.set()` i `db.setmod()`.
+
+### Osnovni koncept:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  || (LOGICAL OR) OPERATOR:                                          │
+│  ═════════════════════════                                          │
+│                                                                     │
+│  Syntax:  operand1 || operand2                                      │
+│                                                                     │
+│  Vraća:                                                             │
+│  - Ako je operand1 TRUTHY → vraća operand1 (short circuit)         │
+│  - Ako je operand1 FALSY → evaluira i vraća operand2               │
+│                                                                     │
+│  ⚠️ VAŽNO: Ne vraća boolean (true/false), već VRIJEDNOST!           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Primjeri sa falsy vrijednostima:
+
+```javascript
+// 8 FALSY VRIJEDNOSTI u JavaScriptu:
+// false, 0, -0, 0n, "", null, undefined, NaN
+
+// Primjer 1: false || true
+false || true
+  ↓
+false je FALSY → evaluira desnu stranu
+  ↓
+vraća true
+  ↓
+REZULTAT: true
+
+
+// Primjer 2: undefined || "default"
+undefined || "default"
+  ↓
+undefined je FALSY → evaluira desnu stranu
+  ↓
+vraća "default"
+  ↓
+REZULTAT: "default"
+
+
+// Primjer 3: 0 || 100
+0 || 100
+  ↓
+0 je FALSY → evaluira desnu stranu
+  ↓
+vraća 100
+  ↓
+REZULTAT: 100
+
+
+// Primjer 4: "" || "text"
+"" || "text"
+  ↓
+"" je FALSY → evaluira desnu stranu
+  ↓
+vraća "text"
+  ↓
+REZULTAT: "text"
+```
+
+---
+
+### Primjeri sa truthy vrijednostima:
+
+```javascript
+// Primjer 5: "hello" || "world"
+"hello" || "world"
+  ↓
+"hello" je TRUTHY → SHORT CIRCUIT, ne evaluira desnu stranu
+  ↓
+vraća "hello"
+  ↓
+REZULTAT: "hello"
+
+
+// Primjer 6: 5 || 10
+5 || 10
+  ↓
+5 je TRUTHY → SHORT CIRCUIT
+  ↓
+vraća 5
+  ↓
+REZULTAT: 5
+
+
+// Primjer 7: true || console.log("never runs")
+true || console.log("never runs")
+  ↓
+true je TRUTHY → SHORT CIRCUIT
+  ↓
+console.log() se NIKADA NE IZVRŠAVA
+  ↓
+REZULTAT: true
+```
+
+---
+
+### Short Circuit evaluacija - Zašto je važna:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  SHORT CIRCUIT:                                                     │
+│  ══════════════                                                     │
+│                                                                     │
+│  Kada || operator utvrdi rezultat, PRESTAJE sa evaluacijom.         │
+│                                                                     │
+│  Ako je lijeva strana TRUTHY:                                       │
+│  - Desna strana se NE EVALUIRA                                      │
+│  - Funkcije se NE POZIVAJU                                          │
+│  - API pozivi se NE ŠALJU                                           │
+│  - Performanse se POBOLJŠAVAJU                                      │
+│                                                                     │
+│  Primjer iz koda:                                                   │
+│                                                                     │
+│  !el.externalAPI || mod === 'disabled' || this.setChildren(...)    │
+│   ↑                 ↑                      ↑                        │
+│   │                 │                      └─ POZIVA SE samo ako     │
+│   │                 │                         oba prethodna su false│
+│   │                 └─ Ako true, preskače setChildren()             │
+│   └─ Ako true, preskače SVE nakon                                  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Praktični primjeri iz našeg koda:
+
+#### Primjer 1: db.setmod()
+
+```typescript
+this.mod = force || ['disabled', 'new', 'edit', 'preview'][index];
+```
+
+```
+SCENARIJ A: force = "disabled"
+───────────────────────────────
+
+"disabled" || ['disabled', 'new', 'edit', 'preview'][index]
+    ↓
+"disabled" je TRUTHY
+    ↓
+SHORT CIRCUIT - array pristup se NE IZVRŠAVA
+    ↓
+REZULTAT: "disabled"
+
+
+SCENARIJ B: force = undefined
+──────────────────────────────
+
+undefined || ['disabled', 'new', 'edit', 'preview'][1]
+    ↓
+undefined je FALSY
+    ↓
+Evaluira desnu stranu
+    ↓
+['disabled', 'new', 'edit', 'preview'][1]
+    ↓
+REZULTAT: "new"
+```
+
+#### Primjer 2: ValueManager.set() - linija 26
+
+```typescript
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(el, model, parameters);
+```
+
+```
+SCENARIJ A: el.externalAPI = undefined (nema API call-a)
+──────────────────────────────────────────────────────────
+
+!undefined || ...
+    ↓
+true || ...
+    ↓
+SHORT CIRCUIT - ne provjerava mod, ne poziva setChildren()
+    ↓
+REZULTAT: true (statement završava)
+
+
+SCENARIJ B: el.externalAPI = "/api/data", mod = "disabled"
+────────────────────────────────────────────────────────────
+
+!"/api/data" || ['disabled', 'preview'].indexOf('disabled') >= 0 || this.setChildren(...)
+    ↓
+false || ...
+    ↓
+Evaluira drugu stranu:
+    ↓
+['disabled', 'preview'].indexOf('disabled') >= 0
+    ↓
+0 >= 0
+    ↓
+true
+    ↓
+true || this.setChildren(...)
+    ↓
+SHORT CIRCUIT - setChildren() se NE POZIVA
+    ↓
+REZULTAT: true (preskočen API call)
+
+
+SCENARIJ C: el.externalAPI = "/api/data", mod = "new"
+───────────────────────────────────────────────────────
+
+!"/api/data" || ['disabled', 'preview'].indexOf('new') >= 0 || this.setChildren(...)
+    ↓
+false || ...
+    ↓
+Evaluira drugu stranu:
+    ↓
+['disabled', 'preview'].indexOf('new') >= 0
+    ↓
+-1 >= 0
+    ↓
+false
+    ↓
+false || this.setChildren(...)
+    ↓
+Evaluira treću stranu (nema short circuit):
+    ↓
+this.setChildren(el, model, parameters)
+    ↓
+REZULTAT: Poziva se setChildren() - šalje se API call
+```
+
+---
+
+### Tablica ponašanja || operatora:
+
+```
+┌───────────────────┬───────────────────┬────────────────────────────┐
+│ Lijeva strana     │ Desna strana      │ Rezultat                   │
+├───────────────────┼───────────────────┼────────────────────────────┤
+│ true              │ bilo što          │ true (short circuit)       │
+│ false             │ true              │ true                       │
+│ false             │ false             │ false                      │
+│ "text"            │ bilo što          │ "text" (short circuit)     │
+│ ""                │ "default"         │ "default"                  │
+│ 5                 │ 10                │ 5 (short circuit)          │
+│ 0                 │ 10                │ 10                         │
+│ undefined         │ "value"           │ "value"                    │
+│ null              │ "value"           │ "value"                    │
+│ NaN               │ 100               │ 100                        │
+└───────────────────┴───────────────────┴────────────────────────────┘
+```
+
+---
+
+### Razlika između || i &&:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  || (OR) vs && (AND):                                                │
+│  ════════════════════                                                │
+│                                                                      │
+│  || (OR):  Traži PRVI TRUTHY ili vraća ZADNJI                       │
+│            Short circuit na TRUTHY                                   │
+│                                                                      │
+│            false || false || true || ...                            │
+│                              ↑                                       │
+│                              └─ Ovdje short circuit                  │
+│                                                                      │
+│  && (AND): Traži PRVI FALSY ili vraća ZADNJI                        │
+│            Short circuit na FALSY                                    │
+│                                                                      │
+│            true && true && false && ...                             │
+│                            ↑                                         │
+│                            └─ Ovdje short circuit                    │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+Primjeri:
+
+```javascript
+// || operator:
+true || true    → true (short circuit na prvom)
+false || true   → true
+false || false  → false
+
+// && operator:
+true && true    → true
+true && false   → false (short circuit na false)
+false && true   → false (short circuit na false)
+```
+
+---
+
+### Praktična upotreba u default vrijednostima:
+
+```typescript
+// Pattern: vrijednost || default
+
+function greet(name) {
+  name = name || "Guest";
+  console.log("Hello, " + name);
+}
+
+greet("Marko");      // "Hello, Marko"
+greet("");           // "Hello, Guest" (prazan string je falsy)
+greet(undefined);    // "Hello, Guest"
+greet(null);         // "Hello, Guest"
+
+
+// MEĐUTIM! Problem sa 0 i false:
+
+function setAge(age) {
+  age = age || 18;
+  return age;
+}
+
+setAge(25);          // 25
+setAge(0);           // 18 ⚠️ BUG! 0 je falsy, ali validna vrijednost!
+setAge(undefined);   // 18
+
+
+// RJEŠENJE: Koristi ?? (nullish coalescing) za brojeve:
+
+function setAge(age) {
+  age = age ?? 18;   // Samo zamjenjuje null/undefined, ne i 0
+  return age;
+}
+
+setAge(25);          // 25
+setAge(0);           // 0 ✓ Ispravan rezultat
+setAge(undefined);   // 18
+```
+
+---
+
+## G12. DETALJNO OBJAŠNJENJE ValueManager.set() - indexOf() LOGIKA
+
+Ova sekcija detaljno objašnjava **najkompleksniju logiku** u suicapture mehanizmu.
+
+### Kod za analizu:
+
+**File:** `value.manager.ts`, linija 25-33
+```typescript
+public set(el: InputObject, model: any, parameters?: any, mod: string = 'new') {
+  // Linija 26 - setChildren check:
+  !el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(el, model, parameters);
+
+  // Linija 27 - setmessages check:
+  !el.externalMessages || !el.externalMessages.length || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setmessages(el, model, parameters);
+
+  // Linija 28-32:
+  if (['radio', 'select'].indexOf(el.template) >= 0 || model[el.name] === undefined) {
+    if (model[el.name] === undefined) this.autoincrement(...) || this.setValueByRefOrCode(...) || this.setDefaultValue(...);
+
+    // Linija 30 - generationFormula check:
+    !el.value || ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch || this[this.declare(el.value.generationFormula)](...);
+
+    // Linija 31 - lookupStatement check:
+    !el.value || ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch || this[this.declare(el.value.lookupStatement)](...);
+  }
+}
+```
+
+---
+
+### Array.indexOf() metoda - osnove:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Array.indexOf(searchElement):                                       │
+│  ══════════════════════════════                                      │
+│                                                                      │
+│  Traži element u array-u i vraća:                                    │
+│  - INDEX (0, 1, 2, ...) ako je element PRONAĐEN                      │
+│  - -1 ako element NIJE PRONAĐEN                                      │
+│                                                                      │
+│  Primjeri:                                                           │
+│                                                                      │
+│  ['a', 'b', 'c'].indexOf('a')  →  0   (pronađen na indexu 0)        │
+│  ['a', 'b', 'c'].indexOf('b')  →  1   (pronađen na indexu 1)        │
+│  ['a', 'b', 'c'].indexOf('c')  →  2   (pronađen na indexu 2)        │
+│  ['a', 'b', 'c'].indexOf('x')  →  -1  (nije pronađen)               │
+│                                                                      │
+│  ⚠️ VAŽNO: Index 0 je TRUTHY u kontekstu >= 0 provjere!              │
+│           0 >= 0  →  true                                            │
+│          -1 >= 0  →  false                                           │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### LINIJA 26 - Analiza setChildren() logike:
+
+```typescript
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(el, model, parameters);
+```
+
+Ova linija ima **3 operanda povezana sa ||**:
+
+```
+Operand 1: !el.externalAPI
+Operand 2: ['disabled', 'preview'].indexOf(mod) >= 0
+Operand 3: this.setChildren(el, model, parameters)
+```
+
+**Logika:**
+```
+Ako je Operand 1 true  →  Short circuit (završi, ne pozivaj setChildren)
+Ako je Operand 1 false  →  Provjeri Operand 2
+  Ako je Operand 2 true  →  Short circuit (završi, ne pozivaj setChildren)
+  Ako je Operand 2 false  →  Izvršava Operand 3 (POZIVA setChildren)
+```
+
+---
+
+### Scenariji za liniju 26:
+
+#### SCENARIJ A: Element nema externalAPI
+
+```typescript
+el.externalAPI = undefined
+mod = "disabled"
+
+// Evaluacija:
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(...)
+     ↓
+!undefined || ...
+     ↓
+true || ...
+     ↓
+SHORT CIRCUIT - ne evaluira ostatak
+     ↓
+REZULTAT: true
+AKCIJA: setChildren() se NE POZIVA
+RAZLOG: Nema API za pozivanje, nema smisla provjeravati mod
+```
+
+#### SCENARIJ B: Element ima externalAPI, mod = "disabled"
+
+```typescript
+el.externalAPI = "/api/getChildren"
+mod = "disabled"
+
+// Evaluacija:
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(...)
+     ↓
+!"/api/getChildren" || ...
+     ↓
+false || ...
+     ↓
+Evaluira Operand 2:
+     ↓
+['disabled', 'preview'].indexOf('disabled') >= 0
+     ↓
+Korak 1: indexOf('disabled')
+    ['disabled', 'preview']
+       ↑ index 0
+
+    REZULTAT: 0
+     ↓
+Korak 2: 0 >= 0
+    true
+     ↓
+true || this.setChildren(...)
+     ↓
+SHORT CIRCUIT - ne poziva setChildren()
+     ↓
+REZULTAT: true
+AKCIJA: setChildren() se NE POZIVA
+RAZLOG: Forma je u "disabled" modu, ne treba dohvaćati podatke
+```
+
+#### SCENARIJ C: Element ima externalAPI, mod = "preview"
+
+```typescript
+el.externalAPI = "/api/getChildren"
+mod = "preview"
+
+// Evaluacija:
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(...)
+     ↓
+false || ...
+     ↓
+['disabled', 'preview'].indexOf('preview') >= 0
+     ↓
+Korak 1: indexOf('preview')
+    ['disabled', 'preview']
+                   ↑ index 1
+
+    REZULTAT: 1
+     ↓
+Korak 2: 1 >= 0
+    true
+     ↓
+true || this.setChildren(...)
+     ↓
+SHORT CIRCUIT
+     ↓
+REZULTAT: true
+AKCIJA: setChildren() se NE POZIVA
+RAZLOG: Forma je u "preview" modu, ne treba dohvaćati podatke
+```
+
+#### SCENARIJ D: Element ima externalAPI, mod = "new"
+
+```typescript
+el.externalAPI = "/api/getChildren"
+mod = "new"
+
+// Evaluacija:
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(...)
+     ↓
+false || ...
+     ↓
+['disabled', 'preview'].indexOf('new') >= 0
+     ↓
+Korak 1: indexOf('new')
+    ['disabled', 'preview']
+    'new' nije u array-u
+
+    REZULTAT: -1
+     ↓
+Korak 2: -1 >= 0
+    false
+     ↓
+false || this.setChildren(...)
+     ↓
+Evaluira Operand 3 (nema short circuit):
+     ↓
+this.setChildren(el, model, parameters)
+     ↓
+REZULTAT: vraća rezultat setChildren() funkcije
+AKCIJA: setChildren() SE POZIVA! ✓
+RAZLOG: Forma je u "new" modu, treba dohvatiti podatke sa API-a
+```
+
+#### SCENARIJ E: Element ima externalAPI, mod = "edit"
+
+```typescript
+el.externalAPI = "/api/getChildren"
+mod = "edit"
+
+// Evaluacija (identična kao SCENARIJ D):
+!el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 || this.setChildren(...)
+     ↓
+false || false || this.setChildren(...)
+     ↓
+REZULTAT: setChildren() SE POZIVA! ✓
+```
+
+---
+
+### LINIJA 30 - Najkompleksnija logika (generationFormula):
+
+```typescript
+!el.value || ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch || this[...](...)
+```
+
+Ovdje imamo **kombinaciju && i || operatora**.
+
+**VAŽNO: Operator precedence (prioritet):**
+- `&&` ima **VIŠI prioritet** od `||`
+- `&&` se evaluira **PRIJE** `||`
+
+```
+Ekvivalentno:
+!el.value || ((['disabled', 'preview'].indexOf(mod) >= 0) && (!this.db.patch)) || this[...](...)
+```
+
+---
+
+### Razlaganje u manje dijelove:
+
+```
+Operand 1: !el.value
+Operand 2: ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch
+Operand 3: this[this.declare(el.value.generationFormula)](...)
+```
+
+**Operand 2 se sastoji od 2 pod-operanda sa &&:**
+```
+Pod-operand 2a: ['disabled', 'preview'].indexOf(mod) >= 0
+Pod-operand 2b: !this.db.patch
+```
+
+**Logika Operanda 2:**
+```
+Ako je 2a false  →  Operand 2 = false (short circuit &&)
+Ako je 2a true   →  Provjeri 2b
+  Ako je 2b true  →  Operand 2 = true
+  Ako je 2b false →  Operand 2 = false
+```
+
+**Ukupna logika:**
+```
+Ako je Operand 1 true   →  Short circuit (ne poziva funkciju)
+Ako je Operand 1 false  →  Provjeri Operand 2
+  Ako je Operand 2 true  →  Short circuit (ne poziva funkciju)
+  Ako je Operand 2 false →  Izvršava Operand 3 (POZIVA funkciju)
+```
+
+---
+
+### Scenariji za liniju 30:
+
+#### SCENARIJ A: Element nema value property
+
+```typescript
+el.value = undefined
+mod = "disabled"
+this.db.patch = undefined
+
+// Evaluacija:
+!el.value || [...].indexOf(mod) >= 0 && !this.db.patch || this[...](...)
+     ↓
+!undefined || ...
+     ↓
+true || ...
+     ↓
+SHORT CIRCUIT
+     ↓
+REZULTAT: true
+AKCIJA: generationFormula funkcija se NE POZIVA
+RAZLOG: Nema value property, nema formule za izvršiti
+```
+
+#### SCENARIJ B: Element ima value, mod = "disabled", patch = undefined
+
+```typescript
+el.value = { generationFormula: "SELECT ..." }
+mod = "disabled"
+this.db.patch = undefined
+
+// Evaluacija:
+!el.value || [...].indexOf(mod) >= 0 && !this.db.patch || this[...](...)
+     ↓
+false || ...
+     ↓
+Evaluira Operand 2:
+     ↓
+['disabled', 'preview'].indexOf('disabled') >= 0 && !this.db.patch
+     ↓
+Korak 1: indexOf('disabled') >= 0
+    0 >= 0
+    true
+     ↓
+Korak 2: true && !undefined
+    true && true
+    true
+     ↓
+Operand 2 = true
+     ↓
+false || true || ...
+     ↓
+true || ...
+     ↓
+SHORT CIRCUIT
+     ↓
+REZULTAT: true
+AKCIJA: generationFormula funkcija se NE POZIVA
+RAZLOG: Forma je u "disabled" modu I patch nije postavljen
+```
+
+#### SCENARIJ C: Element ima value, mod = "disabled", patch = "some-patch"
+
+```typescript
+el.value = { generationFormula: "SELECT ..." }
+mod = "disabled"
+this.db.patch = "some-patch"
+
+// Evaluacija:
+!el.value || [...].indexOf(mod) >= 0 && !this.db.patch || this[...](...)
+     ↓
+false || ...
+     ↓
+Evaluira Operand 2:
+     ↓
+['disabled', 'preview'].indexOf('disabled') >= 0 && !this.db.patch
+     ↓
+Korak 1: indexOf('disabled') >= 0
+    0 >= 0
+    true
+     ↓
+Korak 2: true && !"some-patch"
+    true && false
+    false
+     ↓
+Operand 2 = false
+     ↓
+false || false || this[...](...)
+     ↓
+Evaluira Operand 3:
+     ↓
+this[this.declare(el.value.generationFormula)](...)
+     ↓
+REZULTAT: poziva se funkcija
+AKCIJA: generationFormula funkcija SE POZIVA! ✓
+RAZLOG: Iako je mod "disabled", patch JE postavljen (override)
+```
+
+#### SCENARIJ D: Element ima value, mod = "new", patch = undefined
+
+```typescript
+el.value = { generationFormula: "SELECT ..." }
+mod = "new"
+this.db.patch = undefined
+
+// Evaluacija:
+!el.value || [...].indexOf(mod) >= 0 && !this.db.patch || this[...](...)
+     ↓
+false || ...
+     ↓
+Evaluira Operand 2:
+     ↓
+['disabled', 'preview'].indexOf('new') >= 0 && !this.db.patch
+     ↓
+Korak 1: indexOf('new') >= 0
+    -1 >= 0
+    false
+     ↓
+Korak 2: false && !undefined
+    false (short circuit &&, ne evaluira desnu stranu)
+     ↓
+Operand 2 = false
+     ↓
+false || false || this[...](...)
+     ↓
+Evaluira Operand 3:
+     ↓
+this[this.declare(el.value.generationFormula)](...)
+     ↓
+REZULTAT: poziva se funkcija
+AKCIJA: generationFormula funkcija SE POZIVA! ✓
+RAZLOG: Forma je u "new" modu, treba izvršiti formulu
+```
+
+---
+
+### Tablica ponašanja za sve kombinacije:
+
+```
+┌────────────┬─────────┬──────────────┬──────────────────────────┐
+│ mod        │ patch   │ indexOf>=0   │ Poziva se funkcija?      │
+├────────────┼─────────┼──────────────┼──────────────────────────┤
+│ "disabled" │ undef   │ true (0>=0)  │ NE  (Operand 2 = true)   │
+│ "disabled" │ "patch" │ true (0>=0)  │ DA! (Operand 2 = false)  │
+│ "preview"  │ undef   │ true (1>=0)  │ NE  (Operand 2 = true)   │
+│ "preview"  │ "patch" │ true (1>=0)  │ DA! (Operand 2 = false)  │
+│ "new"      │ bilo    │ false(-1>=0) │ DA! (Operand 2 = false)  │
+│ "edit"     │ bilo    │ false(-1>=0) │ DA! (Operand 2 = false)  │
+└────────────┴─────────┴──────────────┴──────────────────────────┘
+```
+
+---
+
+### Zašto je ova logika važna za suicapture:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  PRIJE PRVOG SAVE (db.mod = "disabled"):                             │
+│  ═══════════════════════════════════════                             │
+│                                                                      │
+│  Linija 26: setChildren() - NE POZIVA SE                            │
+│    → API pozivi za child elemente se preskače                        │
+│    → model ostaje nepotpun                                           │
+│                                                                      │
+│  Linija 27: setmessages() - NE POZIVA SE                            │
+│    → Validacione poruke se ne dohvaćaju                              │
+│    → model ostaje nepotpun                                           │
+│                                                                      │
+│  Linija 30: generationFormula - NE POZIVA SE (osim ako je patch)    │
+│    → Generisane vrijednosti se ne računaju                           │
+│    → model ostaje nepotpun                                           │
+│                                                                      │
+│  REZULTAT: db.model = {auto: {}} - prazan model                      │
+│                                                                      │
+│  ────────────────────────────────────────────────────────────────   │
+│                                                                      │
+│  NAKON PRVOG SAVE (db.mod = "new"):                                 │
+│  ══════════════════════════════════                                 │
+│                                                                      │
+│  Linija 26: setChildren() - POZIVA SE! ✓                            │
+│    → API pozivi za child elemente se izvršavaju                      │
+│    → model se popunjava sa podacima                                  │
+│                                                                      │
+│  Linija 27: setmessages() - POZIVA SE! ✓                            │
+│    → Validacione poruke se dohvaćaju                                 │
+│    → model se popunjava sa validacijama                              │
+│                                                                      │
+│  Linija 30: generationFormula - POZIVA SE! ✓                        │
+│    → Generisane vrijednosti se računaju                              │
+│    → model se popunjava sa generisanim vrijednostima                 │
+│                                                                      │
+│  REZULTAT: db.model = {auto: {}, Osnovneusluge: {...}, ...}         │
+│            Kompletan model sa svim podacima                          │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Vizualizacija toka:
+
+```
+DISABLED MOD (PRIJE prvog save):
+════════════════════════════════
+
+ValueManager.set(el, model, params, 'disabled')
+    │
+    ├─ Linija 26: !el.externalAPI || indexOf('disabled')>=0 || setChildren()
+    │   └─ false || true || ...
+    │   └─ SHORT CIRCUIT → setChildren() preskočen
+    │
+    ├─ Linija 27: !el.externalMessages || indexOf('disabled')>=0 || setmessages()
+    │   └─ false || true || ...
+    │   └─ SHORT CIRCUIT → setmessages() preskočen
+    │
+    └─ Linija 30: !el.value || indexOf('disabled')>=0 && !patch || generationFormula()
+        └─ false || true && true || ...
+        └─ false || true || ...
+        └─ SHORT CIRCUIT → generationFormula() preskočen
+
+REZULTAT: Sve API funkcije PRESKOČENE → model prazan
+
+
+NEW MOD (NAKON prvog save):
+════════════════════════════
+
+ValueManager.set(el, model, params, 'new')
+    │
+    ├─ Linija 26: !el.externalAPI || indexOf('new')>=0 || setChildren()
+    │   └─ false || false || setChildren()
+    │   └─ POZIVA setChildren() ✓
+    │
+    ├─ Linija 27: !el.externalMessages || indexOf('new')>=0 || setmessages()
+    │   └─ false || false || setmessages()
+    │   └─ POZIVA setmessages() ✓
+    │
+    └─ Linija 30: !el.value || indexOf('new')>=0 && !patch || generationFormula()
+        └─ false || false && true || generationFormula()
+        └─ false || false || generationFormula()
+        └─ POZIVA generationFormula() ✓
+
+REZULTAT: Sve API funkcije IZVRŠENE → model popunjen
+```
+
+---
+
+### Ključne spoznaje:
+
+1. **indexOf() vraća index ili -1:**
+   - Pronađen → 0, 1, 2, ... (truthy u kontekstu `>= 0`)
+   - Nije pronađen → -1 (falsy u kontekstu `>= 0`)
+
+2. **>= 0 provjera:**
+   - Provjerava da li je element **u array-u**
+   - `0 >= 0` → true (element na indexu 0)
+   - `-1 >= 0` → false (element nije u array-u)
+
+3. **Operator precedence:**
+   - `&&` ima viši prioritet od `||`
+   - Prvo se evaluiraju `&&` izrazi, pa onda `||`
+
+4. **Short circuit evaluacija:**
+   - `||` short circuit-uje na **prvi truthy**
+   - `&&` short circuit-uje na **prvi falsy**
+
+5. **Patch parametar:**
+   - Override za disabled/preview mod
+   - Omogućava izvršavanje funkcija čak i u disabled modu
+
+---
+
+# SEKCIJA H: KAKO RADI /uomback/suicapture - KOMPLETNO OBJAŠNJENJE
+
+## H1. ŠTA JE /uomback/suicapture?
+
+Suicapture je **mehanizam za perzistentno čuvanje kompletnog stanja forme** u bazu podataka. Ime dolazi od:
+- **SUI** (Screen User Interface)
+- **CAPTURE** (hvatanje/snimanje)
+
+**Doslovno: "snimanje stanja korisničkog ekrana"**
+
+---
+
+## H2. TRI API ENDPOINTA
+
+Suicapture koristi **3 backend endpointa**:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│  1. POST   /uomback/suicapture          → SPREMI kompletno stanje       │
+│  2. GET    /uomback/suicapture/ordnum   → UČITAJ prethodno stanje       │
+│  3. PUT    /uomback/suicapture/model    → AŽURIRAJ samo model dio       │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## H3. ENDPOINT 1: POST /uomback/suicapture (SAVE)
+
+### Tko ga poziva?
+
+Poziva se iz `saveSuicapture()` metode u **4 različite komponente**:
+
+| Komponenta | File | Linija |
+|---|---|---|
+| VpnEvidencijaUslugeComponent | `evidencija-usluge.component.ts` | 349 |
+| EvidencijaSmeComponent | `evidencija-sme-dodatne-usluge.component.ts` | 257 |
+| EvidencijaGrupaComponent | `evidencija-dodatne-usluge-na-nivou-grupe.component.ts` | 261 |
+| EvidencijaBrojComponent | `evidencija-dodatne-usluge-na-broj.component.ts` | 251 |
+
+---
+
+### Kada se poziva?
+
+Poziva se u **3 situacije**:
+
+```
+SITUACIJA 1: Kada korisnik klikne "Spasi" (prvi ili drugi put)
+─────────────────────────────────────────────────────────────
+save() [linija 287]
+  └─ saveBasket(callback) [linija 302]
+       └─ POST /uomback/basket/save  (spremi basket na backend)
+            └─ this.saveSuicapture()  [linija 314]
+
+
+SITUACIJA 2: Kada se spremaju stavke (items) nakon validacije
+─────────────────────────────────────────────────────────────
+saveItem() [linija 353]
+  └─ POST /uomback/basketitem/save/new  (spremi stavke)
+       └─ this.saveSuicapture()  [linija 359]
+
+
+SITUACIJA 3: Kada korisnik spremi komentar
+─────────────────────────────────────────
+saveComment() [linija 438]
+  └─ if (this.basketnum) {
+       this.setBasket();
+       this.saveSuicapture()  [linija 442]
+     }
+```
+
+---
+
+### Šta se šalje na backend?
+
+`saveSuicapture()` konstruira **jsonSetup** objekt koji sadrži **4 polja**, svako serijalizirano u JSON string:
+
+**File:** `evidencija-usluge.component.ts`, linija 327-351
+```typescript
+saveSuicapture() {
+  let jsonSetup = {
+    entryParams: JSON.stringify({...}),   // 1. Parametri forme
+    model:       JSON.stringify({...}),   // 2. Vrijednosti polja + output struktura
+    structure:   JSON.stringify({...}),   // 3. Podaci o korisnicima/računu
+    ordnum:      this.basket.basketnum    // 4. Identifikator (ključ u bazi)
+  };
+  this.api.post('/uomback/suicapture', jsonSetup).subscribe();
+}
+```
+
+---
+
+### Detaljno - Svako polje:
+
+#### POLJE 1: entryParams
+
+```typescript
+entryParams: JSON.stringify({
+  processId: this.processId,                         // "10"
+  offerId: this.offerId,                             // "1174"
+  specId: this.specId,                               // "162"
+  appProcessId: this.appProcessId,                   // undefined ili broj procesa
+  orderEntrySetupRequests: this.orderEntrySetupRequests,  // undefined ili group setup
+  productOfferId: this.productOfferId,               // undefined ili ponuda
+  productSpecificationId: this.productSpecificationId     // undefined ili specifikacija
+})
+```
+
+**Svrha:** Ovo su parametri koji govore sistemu **kakvu formu treba učitati**. Kada se forma ponovo otvara, ovi parametri se koriste za poziv `/pcrt/order-entry` da dohvati istu strukturu forme.
+
+**Izvor podataka:** Dolaze iz **URL query parametara** pri navigaciji na formu.
+
+---
+
+#### POLJE 2: model
+
+```typescript
+model: JSON.stringify({
+  model:  this.db.model,      // Sve vrijednosti koje je korisnik unio u formu
+  output: this.setOutput()    // Struktura za backend (atributi, ponude, specifikacije)
+})
+```
+
+**Ovo je SRCE suicapture mehanizma.** Sadrži dva pod-objekta:
+
+**db.model** - Ravna mapa svih vrijednosti u formi:
+```json
+{
+  "auto": {},
+  "Osnovneusluge": {},
+  "loadOffer162": "1174",
+  "Osnovnipaket-Fizicka": {
+    "FIRSTNAME": "JNF-8241",
+    "NAME": "JNF-8241",
+    "DEFAULTCONTACTPHONE": "1111",
+    "DEFAULTCONTACTEMAIL": "omar.bilalovic@gmail.com"
+  }
+}
+```
+
+**output** - Hijerarhijska struktura sa atributima i ponudama. `setOutput()` pravi **deep copy** od `db.output`, a zatim `handleOutput()` prolazi rekurzivno i:
+1. Postavlja `attvalue` iz `value[name]` za svaki atribut
+2. **Briše `value` referencu** da ne sprema cirkularne reference
+
+```typescript
+// linija 365-373
+setOutput() {
+  let output = JSON.parse(JSON.stringify(this.db.output));  // Deep copy
+  this.handleOutput(output);                                 // Transformacija
+  return output;
+}
+
+handleOutput(output) {
+  for (let item in output) {
+    this.handleOutput(output[item].attr);   // Rekurzivno za atribute
+    this.handleOutput(output[item].items);  // Rekurzivno za pod-stavke
+    this.handleOutput(output[item].spec);   // Rekurzivno za specifikacije
+
+    // Ako je Attribute, postavi attvalue iz model reference:
+    output[item].calss !== "Attribute" || !output[item].value ||
+      Object.assign(output[item], { attvalue: output[item].value[output[item].name] || null });
+
+    delete output[item].value;  // Obriši referencu (ne treba u JSON-u)
+  }
+}
+```
+
+---
+
+#### POLJE 3: structure
+
+```typescript
+structure: JSON.stringify({
+  ca:       this.ca,        // Customer Account (podnositelj zahtjeva)
+  ba:       this.ba,        // Billing Account (primalac računa)
+  sa:       this.sa,        // Service Account (servisni račun)
+  contact:  this.contact,   // Kontakt osoba
+  ocontact: this.ocontact,  // Ovlaštena osoba
+  basket:   this.basket,    // Korpa/zahtjev
+  hasitems: this.hasitems   // Boolean - ima li stavki
+})
+```
+
+**Svrha:** Čuva kompletne podatke o korisniku, računu, kontaktu. Ovi podaci se prikazuju u gornjoj (statičnoj) sekciji forme.
+
+**Zašto se ovo čuva?** Jer kada korisnik ponovo otvori formu, `sharedData` servis možda više nema te podatke (npr. korisnik je navigirao direktno na URL sa basketnum-om).
+
+---
+
+#### POLJE 4: ordnum
+
+```typescript
+ordnum: this.basket.basketnum   // npr. "257697/26"
+```
+
+**Svrha:** Primarni ključ u bazi. Koristi se za pronalaženje prethodno spremljenog stanja.
+
+---
+
+### HTTP poziv na backend:
+
+```typescript
+this.api.post('/uomback/suicapture', jsonSetup).subscribe();
+```
+
+RestApiService (linija 43-47) omotava podatke u `entity` wrapper:
+
+**File:** `rest.api.service.ts`, linija 106-108
+```typescript
+private setEntity(data: any) {
+  return { languageId: 0, channel: '', entity: data };
+}
+```
+
+Dakle, backend prima:
+
+```json
+{
+  "languageId": 0,
+  "channel": "",
+  "entity": {
+    "entryParams": "{\"processId\":\"10\",\"offerId\":\"1174\",\"specId\":\"162\"}",
+    "model": "{\"model\":{\"auto\":{},\"Osnovneusluge\":{},\"Osnovnipaket-Fizicka\":{...}},\"output\":{...}}",
+    "structure": "{\"ca\":{\"id\":130025794,...},\"ba\":{\"id\":330021716,...},\"basket\":{...}}",
+    "ordnum": "257697/26"
+  }
+}
+```
+
+---
+
+### Šta backend radi?
+
+Backend čuva ovo u **SUI_CAPTURE tabelu** u bazi:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  SUI_CAPTURE TABELA                                                      │
+├──────────┬────────────────────────────────────────────────────────────────┤
+│ ID       │ 53097 (auto-increment)                                        │
+│ ORDNUM   │ "257697-01/26" (primarni ključ za pretragu)                   │
+│ ENTRY_P  │ '{"processId":"10","offerId":"1174","specId":"162"}'          │
+│ MODEL    │ '{"model":{...},"output":{...}}'                              │
+│ STRUCTURE│ '{"ca":{...},"ba":{...},"basket":{...}}'                      │
+│ CREATED  │ 2026-02-05T19:43:21.401                                       │
+│ CREATED_BY│ "kenansa"                                                    │
+│ MODIFIED │ 2026-02-05T19:44:29.273 (nakon drugog save)                   │
+│ MODIFIED_BY│ "kenansa"                                                   │
+│ STATUS   │ "1"                                                           │
+├──────────┴────────────────────────────────────────────────────────────────┤
+│ NAPOMENA: Svi JSON stringovi su CLOB/TEXT kolone u bazi                   │
+│ Prvi POST radi INSERT, svaki sljedeći radi UPDATE (po ordnum-u)          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## H4. ENDPOINT 2: GET /uomback/suicapture/ordnum (LOAD)
+
+### Tko ga poziva?
+
+Poziva se iz `loadDynamicData()` metode u sve 4 komponente.
+
+---
+
+### Kada se poziva?
+
+Pri **inicijalizaciji komponente**, ali SAMO ako već postoji basketnum:
+
+**File:** `evidencija-usluge.component.ts`, linija 95
+```typescript
+this.basketnum && this.loadDynamicData() || this.getDynamic('validateinformations');
+```
+
+Logika:
+- Ako `basketnum` postoji (truthy) → poziva `loadDynamicData()`
+- Ako `basketnum` NE postoji (falsy) → poziva `getDynamic()` (čista forma)
+
+---
+
+### Šta se šalje na backend?
+
+**File:** `evidencija-usluge.component.ts`, linija 137
+```typescript
+this.api.get('/uomback/suicapture/ordnum', { ordnum: this.basketnum })
+```
+
+RestApiService pretvara ovo u GET request sa query parametrima:
+```
+GET /uomback/suicapture/ordnum?ordnum=257697/26
+```
+
+---
+
+### Šta backend vraća?
+
+```json
+{
+  "payload": {
+    "id": 53097,
+    "ordnum": "257697-01/26",
+    "entryParams": "{\"processId\":\"10\",\"offerId\":\"1174\",\"specId\":\"162\"}",
+    "model": "{\"model\":{\"auto\":{},\"Osnovneusluge\":{},\"Osnovnipaket-Fizicka\":{...}},\"output\":{...}}",
+    "structure": "{\"ca\":{\"id\":130025794,...},\"ba\":{...},\"basket\":{...}}",
+    "created": "2026-02-05T19:43:21.401",
+    "createdBy": "kenansa",
+    "modified": "2026-02-05T19:44:29.273",
+    "modifiedBy": "kenansa",
+    "status": "1"
+  }
+}
+```
+
+---
+
+### Kako se restaurira stanje?
+
+`loadDynamicData()` (linija 133-179) radi **3 koraka deserijalizacije**:
+
+```
+KORAK 1: Restauriraj entryParams (parametri forme)
+═══════════════════════════════════════════════════
+let parsedEntryParams = JSON.parse(r.payload.entryParams);
+Object.assign(this, parsedEntryParams);
+
+PRIJE:  this.processId = "10"  (iz URL-a)
+        this.offerId = "1174"  (iz URL-a)
+NAKON:  Isti podaci, ali sada restaurirani iz baze
+        + appProcessId, orderEntrySetupRequests, itd.
+
+
+KORAK 2: Restauriraj model (vrijednosti forme + output)
+═══════════════════════════════════════════════════════════
+let parsedModel = JSON.parse(r.payload.model);
+Object.assign(this.db, parsedModel);
+
+PRIJE:  this.db.model = {auto: {}}        (prazan)
+        this.db.output = {}                (prazan)
+
+NAKON:  this.db.model = {auto: {}, Osnovneusluge: {}, Osnovnipaket-Fizicka: {...}}
+        this.db.output = {Osnovneusluge: {attr: {...}, items: {...}, ...}}
+
+⚠️ KLJUČNO: Object.assign(this.db, parsedModel) kopira "model" i "output"
+   properties iz parsiranog objekta direktno na db servis. Sada db.model
+   i db.output sadrže prethodno sačuvane podatke.
+
+
+KORAK 3: Restauriraj structure (korisnici, računi, basket)
+═══════════════════════════════════════════════════════════
+let parsedStructure = JSON.parse(r.payload.structure);
+Object.assign(this, parsedStructure);
+
+PRIJE:  this.ca = {}                (prazan)
+        this.ba = {}                (prazan)
+        this.basket = {}            (prazan)
+
+NAKON:  this.ca = {id: 130025794, customerName: "...", ...}
+        this.ba = {id: 330021716, billingAddress: "...", ...}
+        this.basket = {id: 8765, basketnum: "257697/26", save: true, ...}
+
+⚠️ Object.assign(this, parsedStructure) kopira CA, BA, SA, contact,
+   basket direktno na komponentu (this). Zato forma odmah prikazuje
+   ispravne podatke.
+```
+
+---
+
+Nakon toga poziva `getDynamic()` koji dohvaća strukturu forme sa `/pcrt/order-entry` i renderira dinamičke elemente - ali ovaj put **db.model i db.output VEĆ sadrže podatke**, pa Angular ngModel automatski prikazuje sačuvane vrijednosti.
+
+Dodatno, restaurira i sharedData servis (linija 166-174) za ostatak aplikacije:
+
+```typescript
+// Restauriraj globalnu sharedData za ostale komponente
+Object.assign(this.sharedData.customer.customerGeneralInfo, this.ca);
+Object.assign(this.sharedData.customer.customerBillInfo, this.ba);
+Object.assign(this.sharedData.customer.eventSourceInfo, this.es);
+this.sharedData.caId = this.ca.pCaId;
+```
+
+---
+
+## H5. ENDPOINT 3: PUT /uomback/suicapture/model (UPDATE)
+
+### Tko ga poziva?
+
+Poziva se iz `Actions` servisa.
+
+**File:** `action.service.ts`, linija 19
+```typescript
+public update() {
+  this.api.put('/uomback/suicapture/model', {
+    ordnum: this.db.params.basketnum,
+    model: JSON.stringify({ model: this.db.model, output: this.setOutput() })
+  }).subscribe();
+}
+```
+
+---
+
+### Kada se poziva?
+
+**File:** `evidencija-usluge.component.ts`, linija 285
+```typescript
+update() { this.action.update(); }
+```
+
+Ovo se triggerira klikom na dugme **"Update Suicapture"** u template-u (vidljivo samo kada `db.patch` postoji):
+
+```html
+<!-- evidencija-usluge.template.html, linija 29 -->
+<button *ngIf="db.patch" class="button-btn" (click)="update()">
+  Update Suicapture <i class="fa fa-floppy-o"></i>
+</button>
+```
+
+---
+
+### Razlika od POST-a:
+
+```
+POST /uomback/suicapture:
+  → Šalje SVE (entryParams + model + structure + ordnum)
+  → Koristi se pri svakom save-u
+  → Radi INSERT ili UPDATE cijelih podataka
+
+PUT /uomback/suicapture/model:
+  → Šalje SAMO model + ordnum (bez entryParams i structure)
+  → Koristi se za ručni update samo model dijela
+  → Lakši payload, brži poziv
+  → Vidljiv samo kada db.patch postoji (specijalni mod)
+```
+
+---
+
+## H6. KOMPLETNI ŽIVOTNI CIKLUS
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│  FAZA 1: NOVA FORMA (nema basketnum u URL-u)                           │
+│  ═══════════════════════════════════════════                            │
+│                                                                         │
+│  1. ngOnInit()                                                          │
+│     ├─ this.basket = {}                                                 │
+│     ├─ this.assignObjects()  → db.model = {auto:{}}, db.output = {}    │
+│     ├─ basketnum = undefined → loadDynamicData() se NE poziva           │
+│     └─ getDynamic('validateinformations')                               │
+│         ├─ db.setmod(undef, undef, caId, baId, "disabled")             │
+│         │   └─ db.mod = "disabled"                                      │
+│         └─ GET /pcrt/order-entry → dohvati strukturu forme              │
+│                                                                         │
+│  2. Forma se renderira kao SIVA (inactive CSS klasa)                    │
+│     └─ ContentLoader-i inicijaliziraju elemente                         │
+│         └─ ValueManager.set(..., "disabled") → preskače API pozive     │
+│         └─ Model ostaje nepotpun                                        │
+│                                                                         │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  FAZA 2: PRVI SAVE (korisnik klikne "Spasi")                           │
+│  ════════════════════════════════════════════                            │
+│                                                                         │
+│  3. save() → saveBasket()                                               │
+│     ├─ firstsave = true (basket.id ne postoji)                          │
+│     ├─ POST /uomback/basket/save → kreira basket na backendu            │
+│     │   Response: {id: 8765, basketnum: "257697/26", ...}              │
+│     │                                                                   │
+│     ├─ firstsave blok:                                                  │
+│     │   ├─ this.basket.save = true                                      │
+│     │   ├─ this.assignObjects() → RESETIRA db.model = {auto:{}}        │
+│     │   └─ this.getDynamic() → reinicijalizira u "new" modu            │
+│     │       ├─ db.setmod(..., ..., ..., ..., undefined)                 │
+│     │       │   └─ db.mod = "new" ili "preview" (zavisno od uslova)    │
+│     │       └─ GET /pcrt/order-entry → dohvati strukturu forme          │
+│     │                                                                   │
+│     └─ this.saveSuicapture() ← ŠALJE PRAZAN MODEL (by design)         │
+│         └─ POST /uomback/suicapture                                    │
+│             ├─ model: {model: {auto:{}}, output: {}}  ← PRAZAN         │
+│             ├─ structure: {ca: {...}, ba: {...}, basket: {...}}          │
+│             └─ ordnum: "257697/26"                                      │
+│         └─ Backend: INSERT u SUI_CAPTURE tabelu                         │
+│                                                                         │
+│  4. getDynamic() response stiže (async)                                │
+│     └─ ContentLoader-i se reinicijaliziraju u "new" modu               │
+│         └─ ValueManager.set(..., "new") → IZVRŠAVA API pozive          │
+│         └─ Model se popunjava podacima                                  │
+│     └─ Forma postaje AKTIVNA (korisnik može upisivati)                  │
+│                                                                         │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  FAZA 3: DRUGI SAVE (korisnik unese podatke i klikne "Spasi")          │
+│  ═════════════════════════════════════════════════════════════           │
+│                                                                         │
+│  5. save() → saveBasket(cb)                                             │
+│     ├─ firstsave = false (basket.id POSTOJI)                            │
+│     ├─ POST /uomback/basket/save → ažurira basket                      │
+│     │                                                                   │
+│     └─ this.saveSuicapture() ← ŠALJE POPUNJEN MODEL                   │
+│         └─ POST /uomback/suicapture                                    │
+│             ├─ model: {model: {auto:{}, Osnovneusluge:{},              │
+│             │         Osnovnipaket-Fizicka: {FIRSTNAME:"JNF-8241",     │
+│             │         NAME:"JNF-8241",...}}, output: {...}}             │
+│             ├─ structure: {ca: {...}, ba: {...}, basket: {...}}          │
+│             └─ ordnum: "257697/26"                                      │
+│         └─ Backend: UPDATE u SUI_CAPTURE tabeli (isti ordnum)           │
+│                                                                         │
+│  6. saveItem() (ako callback == 'saveItem')                             │
+│     ├─ POST /uomback/basketitem/save/new → spremi stavke               │
+│     └─ this.saveSuicapture() ← ŠALJE OPET (sa najnovijim stanjem)     │
+│         └─ POST /uomback/suicapture                                    │
+│         └─ Backend: UPDATE u SUI_CAPTURE tabeli                         │
+│                                                                         │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  FAZA 4: PONOVNI LOAD (korisnik se vrati na istu formu)                │
+│  ══════════════════════════════════════════════════════                  │
+│                                                                         │
+│  URL sadrži basketnum:                                                  │
+│  /evidencija/residential/1174/162/0?basketnum=257697/26&...            │
+│                                                                         │
+│  7. ngOnInit()                                                          │
+│     ├─ basketnum = "257697/26" → poziva loadDynamicData()              │
+│     │                                                                   │
+│     └─ loadDynamicData()                                                │
+│         ├─ GET /uomback/suicapture/ordnum?ordnum=257697/26             │
+│         │   └─ Backend: SELECT iz SUI_CAPTURE tabele                    │
+│         │       Response: {entryParams: "...", model: "...",            │
+│         │                  structure: "...", ordnum: "257697-01/26"}    │
+│         │                                                               │
+│         ├─ KORAK 1: JSON.parse(entryParams) → Object.assign(this, ...) │
+│         │   └─ Restaurira: processId, offerId, specId, ...             │
+│         │                                                               │
+│         ├─ KORAK 2: JSON.parse(model) → Object.assign(this.db, ...)    │
+│         │   └─ Restaurira: db.model = {auto:{}, Osnovnipaket-Fizicka:{ │
+│         │      FIRSTNAME:"JNF-8241", ...}}, db.output = {...}          │
+│         │                                                               │
+│         ├─ KORAK 3: JSON.parse(structure) → Object.assign(this, ...)   │
+│         │   └─ Restaurira: ca, ba, sa, contact, basket, hasitems       │
+│         │                                                               │
+│         └─ this.getDynamic() → renderira formu sa restauriranim podacima│
+│             └─ ContentLoader-i koriste db.model → ngModel prikazuje     │
+│                prethodno unesene vrijednosti                            │
+│                                                                         │
+│  8. Korisnik vidi formu sa SVIM prethodno unesenim podacima            │
+│     └─ Može nastaviti gdje je stao                                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## H7. ZAŠTO JE SUICAPTURE POTREBAN?
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  PROBLEM BEZ SUICAPTURE:                                                 │
+│  ═══════════════════════                                                 │
+│                                                                          │
+│  1. Korisnik popuni formu sa 50 polja                                    │
+│  2. Navigira na drugi tab (Pregled narudžbe)                             │
+│  3. Vrati se nazad                                                       │
+│  4. FORMA JE PRAZNA - svi podaci izgubljeni!                             │
+│                                                                          │
+│  Angular SPA uništava komponentu kad se navigira dalje.                  │
+│  ngOnDestroy() → svi lokalni podaci nestaju.                             │
+│                                                                          │
+│  ────────────────────────────────────────────────────────────────────    │
+│                                                                          │
+│  RJEŠENJE SA SUICAPTURE:                                                 │
+│  ═══════════════════════                                                 │
+│                                                                          │
+│  1. Korisnik popuni formu sa 50 polja                                    │
+│  2. Klikne "Spasi" → saveSuicapture() sprema SVE u bazu                 │
+│  3. Navigira na drugi tab                                                │
+│  4. Vrati se nazad                                                       │
+│  5. loadDynamicData() → GET /uomback/suicapture/ordnum                  │
+│  6. Restaurira SVE: model, output, ca, ba, basket, kontakte             │
+│  7. FORMA JE POPUNJENA - korisnik nastavlja gdje je stao!               │
+│                                                                          │
+│  ────────────────────────────────────────────────────────────────────    │
+│                                                                          │
+│  DODATNA PREDNOST:                                                       │
+│  ════════════════                                                        │
+│                                                                          │
+│  - Drugi korisnik može otvoriti isti basketnum i vidjeti stanje          │
+│  - Supervizor može pregledati šta je agent unio                          │
+│  - Stanje preživljava zatvaranje browsera, restart servera               │
+│  - Kompletna historija (created/modified timestamps)                      │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## H8. RAZLIKA IZMEĐU 4 KOMPONENTE
+
+Sve 4 komponente koriste isti mehanizam, ali sa malo drugačijim `structure` poljem:
+
+| Komponenta | Dodatni podaci u structure |
+|---|---|
+| **evidencija-usluge** | ca, ba, sa, contact, ocontact, basket, hasitems |
+| **evidencija-sme** | ca, ba, sa, contact, ocontact, basket, hasitems |
+| **evidencija-grupa** | ca, ba, basket, es, customerNames |
+| **evidencija-broj** | ca, ba, basket, es, customerNames |
+
+Grupa i Broj komponente nemaju `contact` i `ocontact`, ali imaju `es` (EventSource) i `customerNames`.
+
+---
+
+## H9. SAŽETAK U JEDNOJ REČENICI
+
+**Suicapture serijalizira kompletno stanje Angular forme (parametri + model + korisnici) u 3 JSON stringa, sprema ih u bazu pod ključem `ordnum`, i restaurira ih pri ponovnom otvaranju forme - čime omogućava perzistenciju podataka između navigacija i sesija.**
+
+---
+
+## H10. KLJUČNE KOMPONENTE I FAJLOVI
+
+### Frontend komponente koje koriste suicapture:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ File                                        │ Linija save │ Linija load│
+├─────────────────────────────────────────────┼─────────────┼────────────┤
+│ evidencija-usluge.component.ts              │ 349         │ 137        │
+│ evidencija-sme-dodatne-usluge.component.ts  │ 257         │ 130        │
+│ evidencija-dodatne-usluge-na-nivou-grupe... │ 261         │ 142        │
+│ evidencija-dodatne-usluge-na-broj.component │ 251         │ 129        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Servisi:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ rest.api.service.ts                                                    │
+│  ├─ get()  → GET /uomback/suicapture/ordnum                            │
+│  ├─ post() → POST /uomback/suicapture                                  │
+│  └─ put()  → PUT /uomback/suicapture/model                             │
+│                                                                        │
+│ action.service.ts                                                      │
+│  ├─ save() → Transformira db.output u backend format                   │
+│  └─ update() → PUT /uomback/suicapture/model                           │
+│                                                                        │
+│ model.service.ts                                                       │
+│  ├─ db.model  → Ravna mapa vrijednosti forme                           │
+│  ├─ db.output → Hijerarhijska struktura                                │
+│  └─ setmod() → Postavlja db.mod (disabled/new/edit/preview)           │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Backend API:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ POST   /uomback/suicapture                                             │
+│  → Prima: entryParams, model, structure, ordnum                        │
+│  → Radi: INSERT ili UPDATE u SUI_CAPTURE tabeli                        │
+│  → Vraća: {id, ordnum, created, createdBy, modified, modifiedBy}      │
+│                                                                        │
+│ GET    /uomback/suicapture/ordnum?ordnum=X                             │
+│  → Prima: ordnum query parameter                                       │
+│  → Radi: SELECT iz SUI_CAPTURE tabele WHERE ordnum = X                 │
+│  → Vraća: {entryParams, model, structure, ordnum, timestamps}         │
+│                                                                        │
+│ PUT    /uomback/suicapture/model                                       │
+│  → Prima: ordnum, model                                                │
+│  → Radi: UPDATE samo MODEL kolone u SUI_CAPTURE tabeli                 │
+│  → Vraća: Success status                                               │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## H11. ILUSTRACIJA - "SNIMAK EKRANA" U BAZI
+
+Zamislite da radite u Word dokumentu i svake minute kliknete Ctrl+S (Save). Suicapture radi istu stvar, ali umjesto dokumenta - **snima cijelu formu**:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                                                                        │
+│  FORMA NA EKRANU:                    BAZA (SUI_CAPTURE):               │
+│  ════════════════                    ═══════════════════               │
+│                                                                        │
+│  ┌────────────────────────┐          ┌──────────────────────────┐     │
+│  │ Ime: JNF-8241          │    →     │ MODEL: {                 │     │
+│  │ Prezime: JNF-8241      │    →     │   "FIRSTNAME":"JNF-8241",│     │
+│  │ Telefon: 1111          │    →     │   "NAME":"JNF-8241",     │     │
+│  │ Email: omar@gmail...   │    →     │   "PHONE":"1111",        │     │
+│  └────────────────────────┘          │   "EMAIL":"omar@..."     │     │
+│                                      │ }                        │     │
+│  ┌────────────────────────┐          ┌──────────────────────────┐     │
+│  │ Korisnik: 130025794    │    →     │ STRUCTURE: {             │     │
+│  │ Račun: 330021716       │    →     │   "ca":{"id":130025794}, │     │
+│  └────────────────────────┘          │   "ba":{"id":330021716}  │     │
+│                                      │ }                        │     │
+│  ┌────────────────────────┐          ┌──────────────────────────┐     │
+│  │ ProcessId: 10          │    →     │ ENTRY_PARAMS: {          │     │
+│  │ OfferId: 1174          │    →     │   "processId":"10",      │     │
+│  │ SpecId: 162            │    →     │   "offerId":"1174"       │     │
+│  └────────────────────────┘          │ }                        │     │
+│                                      └──────────────────────────┘     │
+│                                                                        │
+│  Klik "Spasi" → POST /uomback/suicapture → INSERT/UPDATE u bazu      │
+│                                                                        │
+│  Zatvoriš browser, otvoriš sutra → GET /uomback/suicapture/ordnum    │
+│                                                                        │
+│  Forma se restaurira IDENTIČNA kao jučer!                             │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# SEKCIJA I: db.model vs db.output - KOMPLETNO OBJAŠNJENJE
+
+## I1. GDJE SE KREIRAJU db.model I db.output?
+
+Oba se kreiraju u `assignObjects()` metodi komponente:
+
+**File:** `evidencija-usluge.component.ts`, linija 131
+```typescript
+assignObjects() {
+  this.Dependency.clear();
+  this.structure = {};
+  this.db
+    .clear(['active', 'activechild'])
+    .assign("model", { auto: {} })   // ← db.model = { auto: {} }
+    .assign("output")                 // ← db.output = {}
+    .assign("params")                 // ← db.params = {}
+    .assign("valid", { name: "evidencija", active: true, valid: true, errors: 0, children: {} });
+}
+```
+
+**File:** `model.service.ts`, linija 9
+```typescript
+public assign(name: string, data?: any) {
+  this[name] = data || {};  // Kreira property na servisu sa imenom 'name'
+  return this;              // Omogućava chaining (.assign().assign()...)
+}
+```
+
+**Inicijalno stanje:**
+```javascript
+db.model  = { auto: {} }    // Prazan objekat
+db.output = {}               // Prazan objekat
+```
+
+---
+
+## I2. GDJE SE KORISTE U TEMPLATE-U?
+
+Oba se šalju **istovremeno** u `z-pageloader` komponentu:
+
+**File:** `evidencija-usluge.template.html`, linija 265-267
+```html
+<z-pageloader
+  [ngClass]="{inactive:!db.mod||db.mod=='disabled'}"
+  *ngIf="structure"
+  [model]="db.model"          ← ŠALJE db.model kao "model" input
+  [items]="structure.structure"
+  [output]="db.output"        ← ŠALJE db.output kao "output" input
+  [vparent]="db.valid"
+  [valid]="db.valid.children"
+  [parameters]="db.params">
+</z-pageloader>
+```
+
+**TOK PODATAKA kroz komponente:**
+
+```
+evidencija-usluge.component.ts
+  │ this.db.model = { auto: {} }
+  │ this.db.output = {}
+  │
+  ▼ [model]="db.model" [output]="db.output"
+z-pageloader
+  │
+  ▼ template iterira preko items
+z-pageloader.template.html
+  │ <z-contentloader [model]="model" [output]="output" ...>
+  │
+  ▼
+z-contentloader
+  │ @Input() model: object;
+  │ @Input() output: DynamicOutput;
+  │
+  ▼ ngOnInit() poziva db.setoutput(items, model, output, index)
+z-contentloader.component.ts
+  │
+  ▼ template prosljeđuje model i output dalje
+z-contentloader.template.html
+  │ <z-dlcontent [inputs]="{model:model, output:output[index], ...}">
+  │
+  ▼
+z-dlcontent
+  │ Dinamički kreira komponentu (z-input, z-select, z-checkbox...)
+  │ Object.assign(cmpRef.instance, this.inputs)
+  │
+  ▼
+z-input / z-checkbox / z-select / itd.
+  │ @Input() model: object;
+  │ template: [(ngModel)]="model[items.name]"
+  │
+  ▼ Korisnik upisuje u input
+HTML <input> element
+```
+
+---
+
+## I3. ŠTA JE db.model?
+
+### Definicija:
+
+**db.model je RAVNA MAPA (flat map) svih vrijednosti koje korisnik vidi i upisuje u formu.**
+
+To je jednostavan JavaScript objekat gdje su **ključevi nazivi polja**, a **vrijednosti su ono što je korisnik unio**.
+
+### Primjer:
+
+```javascript
+db.model = {
+  auto: {},                           // Prazan auto objekat (rezervisan)
+  "Osnovneusluge": {},                // Grupacija
+  "loadOffer162": "1174",             // ID ponude koja je učitana
+  "Osnovnipaket-Fizicka": {           // Pod-objekat za grupu inputa
+    "FIRSTNAME": "JNF-8241",          ← Korisnik unio ime
+    "NAME": "JNF-8241",               ← Korisnik unio prezime
+    "DEFAULTCONTACTPHONE": "1111",    ← Korisnik unio telefon
+    "DEFAULTCONTACTEMAIL": "omar@gmail.com"  ← Korisnik unio email
+  }
+}
+```
+
+### Kako se popunjava?
+
+Svaki input element koristi **Angular two-way binding `[(ngModel)]`**:
+
+**File:** `z-input/input.template.html`, linija 7
+```html
+<input
+  [ngClass]="{readonly: items.template === 'readonly', inactive:db.mod=='preview'}"
+  [id]="items.dname"
+  [name]="items.dname"
+  [(ngModel)]="model[items.name]"  ← DVA-SMJERNI BINDING!
+  [disabled]="items.disabled?'disabled':'false'"
+  [readonly]="items.disabled?'readonly':false"
+  [type]="items.elementType || 'text'"
+  (focusout)="Validation.validate(items, parameters);"
+  (change)="Depedency.depend(items.dname);"/>
+```
+
+**Šta radi `[(ngModel)]="model[items.name]"`?**
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  [(ngModel)] je SKRAĆENICA za:                                         │
+│                                                                        │
+│  [ngModel]="model[items.name]"        ← Input READ (forma → model)    │
+│  (ngModelChange)="model[items.name]=$event"  ← Output WRITE (model → forma) │
+│                                                                        │
+│  Kada se forma renderira:                                              │
+│  - Input ČITA vrijednost iz model[items.name]                         │
+│  - Ako je model["FIRSTNAME"] = "John" → input prikazuje "John"        │
+│                                                                        │
+│  Kada korisnik upisuje:                                                │
+│  - Svaki keystroke triggeruje (ngModelChange)                         │
+│  - Angular PIŠE novu vrijednost u model[items.name]                   │
+│  - Ako korisnik upiše "Jane" → model["FIRSTNAME"] postaje "Jane"      │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Sve komponente koriste istu logiku:
+
+| Komponenta | File | ngModel binding | Linija |
+|---|---|---|---|
+| **z-input** | input.template.html | `[(ngModel)]="model[items.name]"` | 7 |
+| **z-select** | select.template.html | `[(ngModel)]="model[items.name]"` | 4, 12 |
+| **z-checkbox** | checkbox.template.html | `[(ngModel)]="model[items.name]"` | 4 |
+| **z-textarea** | textarea.template.html | `[(ngModel)]="model[items.name]"` | 3 |
+| **z-radio** | radio.template.html | `[(ngModel)]="model[items.name]"` | 5 |
+| **z-autocomplete** | autocomplete.template.html | `[(ngModel)]="model[items.name]"` | 6 |
+| **z-checkboxad** | checkboxad.template.html | `[(ngModel)]="model[items.name]"` | 4 |
+
+### Svrha db.model:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  db.model je "SKLADIŠTE PODATAKA"                                      │
+│  ══════════════════════════════                                        │
+│                                                                        │
+│  1. PRIKAZ: Input elementi ČITAJU iz db.model i prikazuju vrijednosti │
+│                                                                        │
+│  2. UNOS: Korisnik upisuje → Angular PIŠE u db.model                  │
+│                                                                        │
+│  3. PERZISTENCIJA: db.model se sprema u suicapture za reload forme    │
+│                                                                        │
+│  4. JEDNOSTAVAN: Ravna struktura, lako razumljiv, direktan pristup     │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## I4. ŠTA JE db.output?
+
+### Definicija:
+
+**db.output je HIJERARHIJSKA STRUKTURA (stablo/tree) koja opisuje kako su podaci organizovani - koje ponude, specifikacije i atributi postoje, i koja vrijednost pripada kojem.**
+
+To je kompleksna **nested struktura** koja zna:
+- Koje **ponude (OFFER)** su dostupne
+- Koje **specifikacije (SPECIFICATION)** postoje
+- Koji **atributi (Attribute)** pripadaju kojoj ponudi
+- Koji su **backend kodovi** (pproductofferId, attname)
+- Koji su **business parametri** (ACTION_CODE: "A" = Add, "D" = Delete)
+- Da li je ponuda **aktivna** (active: true/false)
+
+### Primjer:
+
+```javascript
+db.output = {
+  "Osnovneusluge": {                            // SPECIFIKACIJA
+    attr: {},                                   // Atributi specifikacije
+    items: {                                    // Ponude u specifikaciji
+      "Osnovnipaket-Fizicka": {                 // PONUDA (OFFER)
+        attr: {                                 // Atributi ponude
+          "FIRSTNAME": {                        // ATRIBUT
+            name: "FIRSTNAME",                  // Ime u formi
+            code: "FIRST_NAME",                 // Backend kod
+            calss: "Attribute",                 // Klasifikacija
+            elementType: "input",               // Tip input elementa
+            label: "Ime",                       // Labela za prikaz
+            active: true,                       // Da li je aktivan
+            dataReference: "OFFER",             // Gdje se sprema
+            value: db.model["Osnovnipaket-Fizicka"]  // ← REFERENCA!
+          },
+          "NAME": {                             // ATRIBUT
+            name: "NAME",
+            code: "LAST_NAME",                  // Backend kod
+            calss: "Attribute",
+            elementType: "input",
+            label: "Prezime",
+            active: true,
+            dataReference: "OFFER",
+            value: db.model["Osnovnipaket-Fizicka"]  // ← REFERENCA!
+          },
+          "DEFAULTCONTACTPHONE": {              // ATRIBUT
+            name: "DEFAULTCONTACTPHONE",
+            code: "DEFAULT_CONTACT_PHONE",      // Backend kod
+            calss: "Attribute",
+            elementType: "input",
+            label: "Telefon",
+            active: true,
+            dataReference: "OFFER",
+            value: db.model["Osnovnipaket-Fizicka"]  // ← REFERENCA!
+          }
+        },
+        items: {},                              // Pod-stavke ponude
+        spec: {},                               // Pod-specifikacije
+        name: "Osnovnipaket-Fizicka",           // Ime ponude
+        code: "12345",                          // pproductofferId (backend)
+        calss: "OFFER",                         // Klasifikacija
+        active: true,                           // Da li je ponuda aktivna
+        businessParams: { ACTION_CODE: "A" },   // A = Add, D = Delete
+        label: "Osnovni paket - Fizička lica",  // Labela za prikaz
+        elementType: "offer",
+        dataReference: "ORDER"
+      }
+    },
+    spec: {},                                   // Pod-specifikacije
+    name: "Osnovneusluge",
+    code: "162",                                // Kod specifikacije
+    calss: "SPECIFICATION",
+    active: true,
+    label: "Osnovne usluge"
+  }
+}
+```
+
+### Šta db.output ZNA što db.model NE ZNA?
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  db.output ZNA:                           db.model NE ZNA:             │
+│  ═══════════                              ════════════                 │
+│                                                                        │
+│  1. Backend kodove                         - Samo zna "FIRSTNAME"      │
+│     code: "FIRST_NAME"                                                 │
+│                                                                        │
+│  2. Hijerarhiju                            - Samo ravna lista          │
+│     Spec → Offer → Attribute                                           │
+│                                                                        │
+│  3. Action code                            - Ne zna da li je Add/Delete│
+│     ACTION_CODE: "A"                                                   │
+│                                                                        │
+│  4. Da li je aktivan                       - Ne zna status             │
+│     active: true/false                                                 │
+│                                                                        │
+│  5. Business klasifikaciju                 - Ne zna tip elementa       │
+│     calss: "Attribute"/"OFFER"/"SPEC"                                  │
+│                                                                        │
+│  6. Gdje se sprema                         - Ne zna data reference     │
+│     dataReference: "OFFER"/"ITEM"                                      │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Kako se kreira db.output?
+
+Svaki `ContentLoader` poziva `db.setoutput()`:
+
+**File:** `contentloader.component.ts`, linija 47
+```typescript
+this.db.setoutput(this.items, this.model, this.output, this.index);
+```
+
+**File:** `model.service.ts`, linija 19-21
+```typescript
+public setoutput(el: InputObject, model: any, output: any, index: string) {
+  el.output = output[index] = output[index]
+    ? Object.assign(output[index], { name: el.name, code: el.code, value: !el.export || model })
+    : { attr: {}, items: {}, spec: {},
+        name: el.name,
+        code: el.code,
+        value: !el.export || model,           // ← KLJUČNA LINIJA!
+        active: el.initActivity,
+        calss: el.businessClassification,
+        businessParams: el.businessParams,
+        label: el.label,
+        elementType: el.elementType,
+        dataReference: el.dataReference
+      };
+}
+```
+
+---
+
+## I5. KAKO SE db.model I db.output POVEZUJU? (REFERENCA)
+
+### Ključna logika u setoutput():
+
+```typescript
+value: !el.export || model
+```
+
+**Evaluacija:**
+
+```
+AKO el.export = undefined (većina slučajeva):
+  !undefined = true
+  true || model → SHORT CIRCUIT, vraća true
+  value = true
+
+AKO el.export = true:
+  !true = false
+  false || model → NE SHORT CIRCUIT, vraća model
+  value = model  ← REFERENCA NA ISTI OBJEKAT!
+```
+
+### Što znači referenca na isti objekat?
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                         MEMORIJA                                       │
+│                         ════════                                       │
+│                                                                        │
+│  db.model["Osnovnipaket-Fizicka"] ─────┐                              │
+│                                         │                              │
+│                                         ▼                              │
+│                                ┌─────────────────────┐                 │
+│                                │ {                   │                 │
+│                                │   FIRSTNAME: "John",│  ← JEDAN objekat│
+│                                │   NAME: "Doe",      │    u memoriji   │
+│                                │   PHONE: "1111"     │                 │
+│                                │ }                   │                 │
+│                                └─────────────────────┘                 │
+│                                         ▲                              │
+│                                         │                              │
+│  db.output["Osnovnipaket-Fizicka"]      │                              │
+│         .value  ───────────────────────┘                              │
+│                                                                        │
+│  OBA POKAZUJU NA **ISTI** OBJEKAT                                      │
+│  Promjena u jednom → odmah vidljiva u drugom                           │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Šta se događa kada korisnik promijeni vrijednost?
+
+```
+SCENARIJ: Korisnik mijenja "FIRSTNAME" iz "John" u "Jane"
+══════════════════════════════════════════════════════════
+
+Korak 1: Korisnik upisuje u <input>
+  └─ <input [(ngModel)]="model[items.name]"> gdje items.name = "FIRSTNAME"
+  └─ Angular detektuje promjenu
+
+Korak 2: Angular ažurira model
+  └─ model["FIRSTNAME"] = "Jane"
+  └─ Ali "model" je zapravo db.model["Osnovnipaket-Fizicka"]
+  └─ Dakle: db.model["Osnovnipaket-Fizicka"]["FIRSTNAME"] = "Jane"
+
+Korak 3: output automatski "vidi" promjenu
+  └─ db.output["Osnovnipaket-Fizicka"].value POKAZUJE na isti objekat
+  └─ db.output["Osnovnipaket-Fizicka"].value["FIRSTNAME"] sada je "Jane"
+  └─ BEZ KOPIRANJA! BEZ RUČNOG AŽURIRANJA!
+
+ZATO JE REFERENCA KLJUČNA:
+  → Korisnik mijenja formu
+  → db.model se ažurira (via ngModel)
+  → db.output AUTOMATSKI ima novu vrijednost (via referenca)
+  → Backend može koristiti db.output.value[name] i dobiti najnoviju vrijednost
+```
+
+---
+
+## I6. ZAŠTO SE OBA ŠALJU NA BACKEND?
+
+**File:** `evidencija-usluge.component.ts`, linija 345
+```typescript
+model: JSON.stringify({
+  model: this.db.model,        // 1. ŠALJE db.model
+  output: this.setOutput()     // 2. ŠALJE transformirani db.output
+})
+```
+
+### I6.1 db.model se šalje za RESTAURACIJU FORME
+
+**Kada:**
+- Korisnik zatvori browser i ponovo otvori formu
+- Korisnik navigira na drugi tab i vrati se nazad
+- Drugi korisnik otvori istu formu (isti basketnum)
+
+**Što se događa:**
+
+**File:** `evidencija-usluge.component.ts`, linija 151-157
+```typescript
+loadDynamicData() {
+  this.api.get('/uomback/suicapture/ordnum', { ordnum: this.basketnum })
+    .subscribe((r: RestPayload) => {
+      // ...
+      let parsedModel = JSON.parse(r.payload.model);
+      Object.assign(this.db, parsedModel);  // ← Restaurira db.model i db.output
+      // ...
+      this.getDynamic();  // ← Renderira formu
+    });
+}
+```
+
+**Rezultat:**
+```
+db.model = {
+  auto: {},
+  "Osnovnipaket-Fizicka": {
+    FIRSTNAME: "JNF-8241",    ← Restaurirano iz baze
+    NAME: "JNF-8241",         ← Restaurirano iz baze
+    PHONE: "1111"             ← Restaurirano iz baze
+  }
+}
+
+Angular renderira formu sa db.model:
+  <input [(ngModel)]="model['FIRSTNAME']">  → prikazuje "JNF-8241"
+  <input [(ngModel)]="model['NAME']">       → prikazuje "JNF-8241"
+  <input [(ngModel)]="model['PHONE']">      → prikazuje "1111"
+```
+
+**Bez db.model:**
+- Forma bi bila PRAZNA pri ponovnom otvaranju
+- Korisnik bi morao ponovo upisivati SVE podatke
+- Izgubljeno bi bilo sat vremena rada!
+
+---
+
+### I6.2 db.output se šalje za KREIRANJE NARUDŽBE na backendu
+
+**Kada:**
+- Korisnik klikne "Spasi" drugi put (nakon unosa podataka)
+- Poziva se `saveItem()` koja kreira stavke narudžbe
+
+**File:** `evidencija-usluge.component.ts`, linija 356
+```typescript
+saveItem() {
+  let items = {
+    saleslocationId: this.user.getSalesLocationId(),
+    salesslocationId: this.user.getSubSalesLocationId(),
+    basketId: Number(this.basket.id),
+    results: [],
+    items: this.action.save()  // ← KORISTI db.output!
+  };
+  this.api.post('/uomback/basketitem/save/new', items).subscribe(...);
+}
+```
+
+**File:** `action.service.ts`, linija 17
+```typescript
+public save() {
+  let offers = [];
+  this.handleStructure(offers, this.db.output);  // ← Prolazi kroz db.output
+  return offers;
+}
+```
+
+**Transformacija db.output → Backend format:**
+
+**File:** `action.service.ts`, linija 56-63
+```typescript
+private handleOffer(parent: any[], input: DynamicOutput) {
+  if (!input.active && !input.adind) return;  // Preskači neaktivne
+
+  let offer: any = {
+    actionCode: input.businessParams['ACTION_CODE'],  // "A" ili "D"
+    pproductofferId: input.code,                      // Backend ID ponude
+    label: input.label,                               // Naziv ponude
+    name: input.name,
+    attributes: [],                                   // Lista atributa
+    parameters: {},                                   // Parametri
+    items: []                                         // Pod-stavke
+  };
+
+  // Dodaje atribute...
+  this.handleStructure(offer, input.attr);
+  parent.push(offer);
+}
+```
+
+**File:** `action.service.ts`, linija 67-73
+```typescript
+private handleAttr(parent: any, input: DynamicOutput) {
+  if (!input.active) return;  // Preskači neaktivne
+
+  // ČITA VRIJEDNOST IZ REFERENCE:
+  let attvalue = input.value && input.value[input.name];
+
+  if (Array.isArray(attvalue)) attvalue = attvalue.join("; ");
+
+  // Dodaje u attributes array:
+  input.dataReference === "ITEM" ||
+    parent.attributes.push({
+      attname: input.code,        // Backend kod (npr. "FIRST_NAME")
+      attvalue: attvalue,         // Vrijednost (npr. "JNF-8241")
+      attlabel: input.label       // Labela (npr. "Ime")
+    });
+}
+```
+
+**REZULTAT `action.save()`:**
+
+```json
+[
+  {
+    "actionCode": "A",
+    "pproductofferId": "12345",
+    "label": "Osnovni paket - Fizička lica",
+    "name": "Osnovnipaket-Fizicka",
+    "attributes": [
+      {
+        "attname": "FIRST_NAME",
+        "attvalue": "JNF-8241",
+        "attlabel": "Ime"
+      },
+      {
+        "attname": "LAST_NAME",
+        "attvalue": "JNF-8241",
+        "attlabel": "Prezime"
+      },
+      {
+        "attname": "DEFAULT_CONTACT_PHONE",
+        "attvalue": "1111",
+        "attlabel": "Telefon"
+      },
+      {
+        "attname": "DEFAULT_CONTACT_EMAIL",
+        "attvalue": "omar@gmail.com",
+        "attlabel": "Email"
+      }
+    ],
+    "parameters": {
+      "P_CA_ID": 130025794,
+      "P_BA_ID": 330021716
+    },
+    "items": []
+  }
+]
+```
+
+Ovo se šalje na backend endpoint `/uomback/basketitem/save/new` i backend koristi:
+- `pproductofferId` da zna KOJU ponudu dodati
+- `actionCode` da zna da li je ADD ("A") ili DELETE ("D")
+- `attributes` da zna KOJE atribute postaviti i na KOJE vrijednosti
+- `attname` (backend kod) da mapira na odgovarajuću kolonu u bazi
+
+**Bez db.output:**
+- Backend ne bi znao GDJE da spremi "JNF-8241" (koji atribut? koja ponuda?)
+- Backend ne bi znao da li je to ADD ili DELETE operacija
+- Backend ne bi znao koji su backend kodovi (FIRST_NAME vs FIRSTNAME)
+- Narudžba ne bi mogla biti kreirana!
+
+---
+
+## I7. setOutput() - PRIPREMA ZA SLANJE
+
+Prije nego što se db.output pošalje na backend, **mora se transformirati**:
+
+**File:** `evidencija-usluge.component.ts`, linija 365-373
+```typescript
+setOutput() {
+  // KORAK 1: Deep copy db.output
+  let output: DynamicOutput = JSON.parse(JSON.stringify(this.db.output));
+
+  // KORAK 2: Transformiraj kopiju
+  this.handleOutput(output);
+
+  // KORAK 3: Vrati transformiranu kopiju
+  return output;
+}
+
+handleOutput(output: DynamicOutput) {
+  for (let item in output) {
+    // Rekurzivno procesira sve nivoe:
+    this.handleOutput(output[item].attr);
+    this.handleOutput(output[item].items);
+    this.handleOutput(output[item].spec);
+
+    // Za svaki atribut:
+    output[item].calss !== "Attribute" || !output[item].value ||
+      Object.assign(output[item], {
+        attvalue: output[item].value[output[item].name] || null  // ← Ekstraktuje vrijednost
+      });
+
+    delete output[item].value;  // ← OBRIŠI referencu (ne može u JSON)
+  }
+}
+```
+
+**ZAŠTO se radi deep copy i brisanje reference?**
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  PROBLEM: Cirkul arne reference                                        │
+│  ══════════════════════════════                                        │
+│                                                                        │
+│  db.output["FIRSTNAME"].value → pokazuje na db.model objekat           │
+│  db.model je kompleksan objekat sa mnogo drugih referenci              │
+│  JSON.stringify() ne može serijalizirati cirkularne reference          │
+│                                                                        │
+│  RJEŠENJE:                                                             │
+│  ════════                                                              │
+│                                                                        │
+│  1. Napravi deep copy (novi objekat, bez referenci)                    │
+│  2. Za svaki atribut:                                                  │
+│     - Izvuci vrijednost: attvalue = value[name]                        │
+│     - Obriši value property: delete output[item].value                 │
+│  3. Sada je output "čist" objekat bez cirkulanih referenci             │
+│  4. Može se serijalizirati u JSON string                               │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+**PRIJE handleOutput():**
+```javascript
+db.output["FIRSTNAME"] = {
+  name: "FIRSTNAME",
+  code: "FIRST_NAME",
+  value: db.model["Osnovnipaket-Fizicka"],  // ← REFERENCA (ne može u JSON)
+  calss: "Attribute"
+}
+```
+
+**NAKON handleOutput():**
+```javascript
+output["FIRSTNAME"] = {
+  name: "FIRSTNAME",
+  code: "FIRST_NAME",
+  attvalue: "JNF-8241",  // ← EKSTRAKTOVANA VRIJEDNOST
+  calss: "Attribute"
+  // value je obrisan
+}
+```
+
+---
+
+## I8. ANALOGIJA ZA JUNIOR PROGRAMERA
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│  Zamislite da pravite PIZZA NARUDŽBU:                                    │
+│  ════════════════════════════════════                                    │
+│                                                                          │
+│  db.model = PAPIR GDJE KORISNIK PIŠE                                   │
+│  ───────────────────────────────────                                    │
+│  "Želim pizzu sa šunkom, sirom i gljivama.                              │
+│   Veličina: velika. Dostava na: Titova 10."                             │
+│                                                                          │
+│  → Ravna lista podataka                                                 │
+│  → Korisnik direktno piše/mijenja                                       │
+│  → Čuva se da korisnik može nastaviti ako zatvori browser               │
+│  → Jednostavno za razumijevanje                                          │
+│                                                                          │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                          │
+│  db.output = NARUDŽBENICA ZA KUHINJU                                    │
+│  ───────────────────────────────────────                                    │
+│  Narudžba #257697:                                                       │
+│    Proizvod: "Velika pizza"                                              │
+│      - Kod proizvoda: PIZZA_LG                                           │
+│      - Akcija: ADD                                                       │
+│      - Atributi:                                                         │
+│          * TOPPING_1: "šunka"   (backend kod: TOP1)                     │
+│          * TOPPING_2: "sir"     (backend kod: TOP2)                     │
+│          * TOPPING_3: "gljive"  (backend kod: TOP3)                     │
+│      - Parametri:                                                        │
+│          * CUSTOMER_ID: 130025794                                        │
+│          * DELIVERY_ADDRESS: "Titova 10"                                 │
+│                                                                          │
+│  → Hijerarhijska struktura (proizvod → atributi → parametri)            │
+│  → Backend razumije OVO, ne razumije ravnu listu                         │
+│  → Sadrži CODE-ove (backend ID-ove) koje korisnik nikad ne vidi        │
+│  → Sadrži meta-podatke (active, actionCode, businessClassification)     │
+│  → Kompleksno za razumijevanje                                           │
+│                                                                          │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                          │
+│  ZAŠTO OBA?                                                              │
+│  ══════════                                                              │
+│                                                                          │
+│  Kada korisnik upisuje:                                                  │
+│  ─────────────────────                                                  │
+│  <input [(ngModel)]="model['TOPPING_1']">                               │
+│         │                                                                │
+│         └─→ PIŠE u db.model["TOPPING_1"] = "šunka"                     │
+│                                                                          │
+│  db.output["TOPPING_1"].value POKAZUJE na db.model (referenca)         │
+│  Dakle, output AUTOMATSKI ima "šunka" bez kopiranja!                   │
+│                                                                          │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                          │
+│  Kada se sprema u bazu:                                                  │
+│  ──────────────────────                                                  │
+│  POST /uomback/suicapture                                               │
+│  {                                                                       │
+│    model: {                        ← Za RESTAURACIJU forme              │
+│      "TOPPING_1": "šunka",                                              │
+│      "TOPPING_2": "sir",                                                │
+│      "TOPPING_3": "gljive"                                              │
+│    },                                                                   │
+│    output: {                       ← Za KREIRANJE narudžbe              │
+│      "TOPPING_1": {                                                     │
+│        code: "TOP1",               ← Backend ID                         │
+│        attvalue: "šunka"                                                │
+│      }                                                                  │
+│    }                                                                    │
+│  }                                                                       │
+│                                                                          │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                          │
+│  BEZ db.model:  Forma ne bi znala šta da prikaže pri reload-u           │
+│  BEZ db.output: Backend ne bi znao GDJE da spremi "šunka"              │
+│                 (koji atribut? koja ponuda? koji action code?)          │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## I9. TABLICA RAZLIKA
+
+```
+┌──────────────────────┬───────────────────────────┬───────────────────────────┐
+│                      │ db.model                   │ db.output                 │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ STRUKTURA            │ RAVNA mapa (flat)          │ STABLO (tree/hierarchy)   │
+│                      │ {                          │ { spec: { items: {        │
+│                      │   FIRSTNAME: "John"        │   offer: { attr: {        │
+│                      │ }                          │     FIRSTNAME: {...}}}}}  │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ SADRŽI               │ Samo VRIJEDNOSTI           │ Struktura + meta-podaci   │
+│                      │ FIRSTNAME: "JNF-8241"      │ code, calss, active,      │
+│                      │                            │ businessParams, label     │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ PRIMJER              │ FIRSTNAME: "JNF-8241"      │ {attr:{FIRSTNAME:{        │
+│                      │                            │   code:"FIRST_NAME",      │
+│                      │                            │   calss:"Attribute",      │
+│                      │                            │   value: →model ref}}}    │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ KO PIŠE U NJEGA?     │ Korisnik (via ngModel)     │ Sistem (via setoutput())  │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ KO ČITA IZ NJEGA?    │ Input komponente (ngModel) │ action.save() za backend  │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ SVRHA PRI SAVE       │ Restauracija forme         │ Kreiranje narudžbe        │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ SVRHA PRI LOAD       │ Popunjava inpute           │ Zna strukturu ponuda      │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ INICIJALNO           │ { auto: {} }               │ {}                        │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ IMA BACKEND KODOVE?  │ NE (samo imena polja)      │ DA (code, pproductofferId)│
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ IMA ACTION CODE?     │ NE                         │ DA (A=Add, D=Delete)      │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ IMA HIJERARHIJU?     │ NE (ravna lista)           │ DA (spec→offer→attr)     │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ VEZAN ZA ANGULAR?    │ DA (ngModel two-way bind)  │ NE (čisti JS objekat)    │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ MOŽE SE SERIJALIZOVATI│ DA (jednostavno)          │ NE! (ima cirkularne ref)  │
+│ DIREKTNO U JSON?     │                            │ Mora setOutput() prvo     │
+├──────────────────────┼───────────────────────────┼───────────────────────────┤
+│ KOMPLEKSNOST         │ JEDNOSTAVNO                │ KOMPLEKSNO                │
+│                      │ (junior razumije)          │ (treba iskustvo)          │
+└──────────────────────┴───────────────────────────┴───────────────────────────┘
+```
+
+---
+
+## I10. VIZUALNI TOK - KOMPLETAN CIKLUS
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                                                                        │
+│  FAZA 1: KORISNIK UPISUJE U FORMU                                      │
+│  ═════════════════════════════                                         │
+│                                                                        │
+│  ┌───────────────┐     [(ngModel)]="model[items.name]"                │
+│  │  <input>      │ ─────────────────────────────────────┐              │
+│  │  type="text"  │                                      │              │
+│  │               │                                      ▼              │
+│  │  Korisnik     │                            ┌─────────────────────┐  │
+│  │  upisuje:     │     Angular                │  db.model           │  │
+│  │  "JNF-8241"   │     automatski             │  {                  │  │
+│  └───────────────┘     ažurira ──────────────▶│   FIRSTNAME:        │  │
+│                                                │    "JNF-8241"       │  │
+│                                                │  }                  │  │
+│                                                └──────────┬──────────┘  │
+│                                                           │             │
+│                                ┌──────────────────────────┘             │
+│                                │ REFERENCA (isti objekat u memoriji)    │
+│                                │                                        │
+│                                ▼                                        │
+│                       ┌─────────────────────┐                           │
+│                       │  db.output          │                           │
+│                       │  {                  │                           │
+│                       │   FIRSTNAME: {      │                           │
+│                       │     value: →model,  │ ← pokazuje na db.model    │
+│                       │     code: "F_NAME", │                           │
+│                       │     calss: "Attr"   │                           │
+│                       │   }                 │                           │
+│                       │  }                  │                           │
+│                       └─────────────────────┘                           │
+│                                                                        │
+│  ─────────────────────────────────────────────────────────────────────│
+│                                                                        │
+│  FAZA 2: SAVE NA BACKEND (suicapture)                                  │
+│  ═══════════════════════════════════                                   │
+│                                                                        │
+│  saveSuicapture() poziva:                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ model: JSON.stringify({                                          │ │
+│  │   model: this.db.model,          ← ZA RESTAURACIJU FORME        │ │
+│  │   output: this.setOutput()       ← ZA STRUKTURU NARUDŽBE        │ │
+│  │ })                                                               │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│        │                                    │                          │
+│        ▼                                    ▼                          │
+│  ┌──────────────┐                    ┌──────────────────┐             │
+│  │ Čuva se u    │                    │ setOutput() radi:│             │
+│  │ SUI_CAPTURE  │                    │ 1. Deep copy     │             │
+│  │ tabeli za    │                    │ 2. handleOutput()│             │
+│  │ reload forme │                    │    - postavi     │             │
+│  │              │                    │      attvalue    │             │
+│  │ MODEL kolona:│                    │    - obriši value│             │
+│  │ {            │                    │      referencu   │             │
+│  │  FIRSTNAME:  │                    │                  │             │
+│  │   "JNF-8241" │                    │ OUTPUT kolona:   │             │
+│  │ }            │                    │ {                │             │
+│  │              │                    │   FIRSTNAME: {   │             │
+│  │              │                    │     code:"F_NAME"│             │
+│  │              │                    │     attvalue:    │             │
+│  │              │                    │      "JNF-8241"  │             │
+│  │              │                    │   }              │             │
+│  │              │                    │ }                │             │
+│  └──────────────┘                    └──────────────────┘             │
+│                                                                        │
+│  ─────────────────────────────────────────────────────────────────────│
+│                                                                        │
+│  FAZA 3: SAVE NARUDŽBE (basketitem/save/new)                          │
+│  ══════════════════════════════════════════                            │
+│                                                                        │
+│  saveItem() poziva:                                                    │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ items: this.action.save()     ← KORISTI db.output                │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│        │                                                               │
+│        ▼                                                               │
+│  action.save() prolazi kroz db.output:                                │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ handleStructure(offers, this.db.output)                          │ │
+│  │   └─ handleOffer() kreira:                                        │ │
+│  │       {                                                           │ │
+│  │         pproductofferId: "12345"    ← iz output.code              │ │
+│  │         actionCode: "A"             ← iz output.businessParams    │ │
+│  │         attributes: [                                             │ │
+│  │           {                                                       │ │
+│  │             attname: "FIRST_NAME"   ← iz output.code              │ │
+│  │             attvalue: "JNF-8241"    ← iz output.value[name]       │ │
+│  │           }                                                       │ │
+│  │         ]                                                         │ │
+│  │       }                                                           │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│        │                                                               │
+│        ▼                                                               │
+│  POST /uomback/basketitem/save/new                                    │
+│  Backend kreira stavke narudžbe u bazi                                │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## I11. SAŽETAK
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                                                                        │
+│  db.model  = ŠTA je korisnik unio      (vrijednosti)                  │
+│  db.output = GDJE to pripada           (struktura + meta-podaci)      │
+│                                                                        │
+│  db.model  služi za FORMU              (prikaz i unos)                 │
+│  db.output služi za BACKEND            (kreiranje narudžbe)            │
+│                                                                        │
+│  db.model  se čuva u suicapture        za RESTAURACIJU forme          │
+│  db.output se čuva u suicapture        za RESTAURACIJU strukture      │
+│                                                                        │
+│  REFERENCA povezuje ih:                                                │
+│  output.value → pokazuje na model (isti objekat u memoriji)           │
+│                                                                        │
+│  Korisnik mijenja formu → db.model se ažurira (via ngModel)           │
+│                         → db.output automatski vidi promjenu (via ref) │
+│                                                                        │
+│  Oba se šalju jer backend treba OBA:                                   │
+│  - db.model da može ponovo napuniti formu                             │
+│  - db.output da zna strukturu ponuda i atributa                        │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+*Ažurirano: 2026-02-06*
 *Sekcija C: Detaljna Analiza Suicapture Requesta Sa Stvarnim Podacima*
 *Sekcija D: Jednostavno Objašnjenje Sa Analogijom*
 *Sekcija E: Od getDynamic() Do Korisničkog Unosa - Detaljni Tok*
 *Sekcija F: Pojednostavljeno Objašnjenje Za Junior Programere*
+*Sekcija G: Zašto Je db.model Prazan Na Prvi Save? (By Design)*
+*Sekcija G10: Detaljno Objašnjenje db.setmod() - Evaluacija Parametara*
+*Sekcija G11: Detaljno Objašnjenje || (OR) Operatora i Short Circuit Evaluacije*
+*Sekcija G12: Detaljno Objašnjenje ValueManager.set() - indexOf() Logika*
+*Sekcija H: Kako Radi /uomback/suicapture - Kompletno Objašnjenje*
+*Sekcija I: db.model vs db.output - Kompletno Objašnjenje*
