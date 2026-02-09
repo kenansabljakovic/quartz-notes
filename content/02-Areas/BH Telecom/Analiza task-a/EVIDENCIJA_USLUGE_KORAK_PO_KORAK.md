@@ -3476,6 +3476,3672 @@ orderEntrySetupRequests = '[{"msisdn":"061123456","productOfferId":"1174"},{"msi
 
 ---
 
+## KORAK 4: Populacija db.model - Od praznog objekta do punog modela
+
+### Uvod
+
+Jedan od najtežih koncepata za razumjeti kod Suicapture mehanizma je **kako se `db.model` puni podacima**. Kada se komponenta učita, `db.model` je prazan objekat:
+
+```typescript
+db.model = { auto: {} }
+```
+
+Ali kada korisnik klikne "Spasi", `db.model` sadrži sve podatke:
+
+```typescript
+db.model = {
+  auto: {},
+  "Osnovneusluge": {
+    "Osnovnipaket-Fizicka": {
+      FIRSTNAME: "Kenan",
+      NAME: "Testni korisnik",
+      JOBTITLE: "Direktor",
+      PRIKLJUCAK_ADSL: "1234567",
+      // ... sve ostale vrijednosti
+    }
+  }
+}
+```
+
+**Kako se ova transformacija dešava?** To ćemo objasniti u 7 faza.
+
+---
+
+### FAZA 1: Inicijalizacija - assignObjects()
+
+**Gdje:** `evidencija-usluge.component.ts`, linija ~131
+
+**Kada:** U `ngOnInit()` poziva se `this.assignObjects()`
+
+**Šta radi:**
+
+```typescript
+assignObjects() {
+  console.log('=== assignObjects() START ===');
+
+  this.Dependency.clear();
+  this.structure = {};
+
+  this.db.clear(['active', 'activechild'])
+    .assign("model", { auto: {} })
+    .assign("output")
+    .assign("params")
+    .assign("valid", { children: {}, errors: 0, validated: undefined });
+
+  console.log('db.model NAKON assign:', this.db.model);
+  // Output: { auto: {} }
+
+  console.log('=== assignObjects() END ===');
+}
+```
+
+**Rezultat:**
+
+```
+db.model = { auto: {} }     ← PRAZAN objekat, samo sa 'auto' propertijom
+db.output = {}
+db.params = {}
+db.valid = { children: {}, errors: 0, validated: undefined }
+```
+
+**Console output:**
+
+```
+=== assignObjects() START ===
+db.model NAKON assign: {"auto":{}}
+db.output NAKON assign: {}
+db.params NAKON assign: {}
+=== assignObjects() END ===
+```
+
+---
+
+### FAZA 2: getDynamic() dohvata strukturu
+
+**Gdje:** `evidencija-usluge.component.ts`, linija ~183
+
+**Kada:** Nakon `assignObjects()`, poziva se `getDynamic('validateinformations')`
+
+**Šta radi:**
+
+```typescript
+getDynamic(callback?: string, params?: object) {
+  // API poziv
+  this.http.get('/pcrt/order-entry', {
+    interactionId: 16,
+    productOfferId: "1174",          // Osnovni paket- Fizicka
+    productSpecificationId: "162",    // Osnovne usluge
+    appProcessId: "10",
+    setupType: "SALES"
+  }).subscribe(r => {
+    // Postavlja strukturu
+    this.structure = r.payload;
+
+    // Ažurira parametre
+    this.db.update(this.db.params, merged_params);
+
+    // Poziva callback
+    this[callback]();  // → validateinformations()
+  });
+}
+```
+
+**Rezultat:**
+
+```typescript
+this.structure = {
+  structure: [
+    {
+      label: "Osnovne usluge",
+      name: "Osnovneusluge",      // ← KEY property
+      code: "162",
+      template: "default_block",
+      elements: [
+        {
+          label: "Osnovni paket- Fizicka",
+          name: "Osnovnipaket-Fizicka",  // ← KEY property
+          code: "1174",
+          template: "basic_block",
+          inputs: [
+            { name: "FIRSTNAME", label: "Ime", componentType: "input", ... },
+            { name: "NAME", label: "Prezime/Naziv", componentType: "input", ... },
+            { name: "JOBTITLE", label: "Funkcija", componentType: "input", ... }
+            // ... ostali inputi
+          ],
+          children: [ /* Tarifni paketi, Zabrana info... */ ]
+        }
+      ]
+    }
+  ],
+  parameters: { type: 100 }
+}
+```
+
+**VAŽNO:** U ovoj fazi `db.model` je još uvijek:
+
+```
+db.model = { auto: {} }  ← NIJE SE PROMIJENIO!
+```
+
+---
+
+### FAZA 3: Renderovanje - DefaultBlock i BasicBlock kreiraju nested objekte
+
+**Gdje:** Template → `<z-pageloader>` → komponente: `defaultblock.component.ts`, `basicblock.component.ts`
+
+**Kada:** Nakon što struktura stigne, Angular renderuje template:
+
+```html
+<z-pageloader *ngIf="structure"
+  [items]="structure.structure"
+  [model]="db.model"
+  [output]="db.output"
+  [parameters]="db.params">
+</z-pageloader>
+```
+
+#### 3.1. DefaultBlock se renderuje za "Osnovne usluge"
+
+**Komponenta:** `defaultblock.component.ts`
+
+**ngOnInit():**
+
+```typescript
+ngOnInit() {
+  console.log('=== DefaultBlock ngOnInit ===');
+  console.log('items.name:', this.items.name);           // "Osnovneusluge"
+  console.log('items.label:', this.items.label);         // "Osnovne usluge"
+  console.log('items.code:', this.items.code);           // "162"
+  console.log('model PRIJE kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{}}
+
+  if (!this.model[this.items.name]) this.model[this.items.name] = {};
+
+  console.log('model NAKON kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"Osnovneusluge":{}}
+
+  console.log('Kreiran nested objekat: model["' + this.items.name + '"] = {}');
+  console.log('======================');
+}
+```
+
+**Rezultat:**
+
+```
+db.model = {
+  auto: {},
+  "Osnovneusluge": {}    ← NOVI nested objekat!
+}
+```
+
+**Console output:**
+
+```
+=== DefaultBlock ngOnInit ===
+items.name: Osnovneusluge
+items.label: Osnovne usluge
+items.code: 162
+model PRIJE kreiranja: {"auto":{}}
+model NAKON kreiranja: {"auto":{},"Osnovneusluge":{}}
+Kreiran nested objekat: model["Osnovneusluge"] = {}
+======================
+```
+
+#### 3.2. DefaultBlock prosleđuje model djetetu - KLJUČNI MOMENAT!
+
+**Template:** `defaultblock.template.html`
+
+```html
+<z-dynamic-component
+  *ngFor="let element of items.elements"
+  [dlcontent]="element.template"
+  [items]="element"
+  [model]="model"              ← Prosleđuje CIJELI model!
+  [output]="output"
+  [parent]="model"
+  [pname]="items.name">
+</z-dynamic-component>
+```
+
+**KLJUČNO:** `[model]="model"` prosleđuje CIJELI `db.model` objekat, ne samo nested dio!
+
+#### 3.3. BasicBlock se renderuje za "Osnovni paket- Fizicka"
+
+**Komponenta:** `basicblock.component.ts`
+
+**ngOnInit():**
+
+```typescript
+ngOnInit() {
+  console.log('=== BasicBlock ngOnInit ===');
+  console.log('items.name:', this.items.name);           // "Osnovnipaket-Fizicka"
+  console.log('items.label:', this.items.label);         // "Osnovni paket- Fizicka"
+  console.log('items.code:', this.items.code);           // "1174"
+  console.log('model PRIJE kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"Osnovneusluge":{}}
+
+  if (!this.model[this.items.name]) this.model[this.items.name] = {};
+
+  console.log('model NAKON kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"Osnovneusluge":{},"Osnovnipaket-Fizicka":{}}
+
+  console.log('Kreiran nested objekat: model["' + this.items.name + '"] = {}');
+  console.log('======================');
+}
+```
+
+**Rezultat:**
+
+```
+db.model = {
+  auto: {},
+  "Osnovneusluge": {},
+  "Osnovnipaket-Fizicka": {}    ← NOVI nested objekat!
+}
+```
+
+**ČEKAJ, ZAŠTO NIJE:**
+
+```
+db.model = {
+  auto: {},
+  "Osnovneusluge": {
+    "Osnovnipaket-Fizicka": {}    ← Ne, nije ovako!
+  }
+}
+```
+
+**ODGOVOR:** Zato što DefaultBlock prosleđuje `[model]="model"` (cijeli model), a NE `[model]="model[items.name]"` (nested dio).
+
+**Ali kako onda input komponente znaju gdje da stave vrijednosti?**
+
+#### 3.4. BasicBlock prosleđuje model[items.name] djeci - DRUGI KLJUČNI MOMENAT!
+
+**Template:** `basicblock.template.html`
+
+```html
+<z-dynamic-component
+  *ngFor="let input of items.inputs"
+  [dlcontent]="input.componentType"
+  [items]="input"
+  [model]="model[items.name]"    ← OVDJE! Prosleđuje NESTED objekat!
+  [output]="output"
+  [parent]="model">
+</z-dynamic-component>
+```
+
+**KLJUČNO:** `[model]="model[items.name]"` prosleđuje SAMO nested dio modela!
+
+Što znači:
+
+```typescript
+// Za input FIRSTNAME, model će biti:
+model = db.model["Osnovnipaket-Fizicka"]
+// što je REFERENCA na db.model["Osnovnipaket-Fizicka"] !
+```
+
+**Ovo je REFERENCA, ne kopija!** Što znači da kada input promijeni `model[items.name]`, on direktno mijenja `db.model["Osnovnipaket-Fizicka"][items.name]`!
+
+---
+
+### FAZA 4: ContentLoader i ValueManager pune inicijalnu vrijednost
+
+**Gdje:** `contentloader.component.ts`, linija ~41
+
+**Kada:** Nakon što se input komponenta renderuje, njen parent ContentLoader poziva `ValueManager.set()`
+
+**Šta radi:**
+
+```typescript
+// contentloader.component.ts
+ngOnInit() {
+  console.log('=== ContentLoader ngOnInit ===');
+  console.log('items.name:', this.items.name);           // "FIRSTNAME"
+  console.log('items.label:', this.items.label);         // "Ime"
+  console.log('model PRIJE ValueManager.set:', this.model);
+  // Output: {}
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set:', this.model);
+  // Output: { FIRSTNAME: "" }  ← INICIJALIZOVANO!
+  console.log('======================');
+}
+```
+
+#### 4.1. ValueManager.set() - Logika inicijalizacije
+
+**Komponenta:** `value.manager.ts`, linija ~25
+
+```typescript
+set(field: InputObject, model: object, parameters?: any, mod?: string) {
+  // 1. Provjera: Da li polje već ima vrijednost?
+  if (model[field.name] !== undefined) {
+    return;  // Već ima vrijednost, ne radi ništa
+  }
+
+  // 2. generationFormula - Izvršava SQL via backend
+  if (field.generationFormula) {
+    this.dblookup(field.generationFormula, parameters).subscribe(result => {
+      model[field.name] = result;
+    });
+    return;
+  }
+
+  // 3. defaultValue - Statička default vrijednost
+  if (field.defaultValue !== undefined) {
+    model[field.name] = field.defaultValue;
+    return;
+  }
+
+  // 4. mappingRef - Uzima vrijednost iz parametara
+  if (field.mappingRef && parameters[field.mappingRef] !== undefined) {
+    model[field.name] = parameters[field.mappingRef];
+    return;
+  }
+
+  // 5. Fallback - Prazan string ili null
+  model[field.name] = field.componentType === 'checkbox' ? false : '';
+}
+```
+
+**Primjer sa pravim podacima:**
+
+Polje: **FIRSTNAME** (Ime)
+
+```typescript
+{
+  name: "FIRSTNAME",
+  label: "Ime",
+  componentType: "input",
+  generationFormula: "SELECT contact.firstname FROM contact WHERE contact.id = :P_CONTACT_ID",
+  mappingRef: undefined,
+  defaultValue: undefined
+}
+```
+
+**Izvršavanje:**
+
+1. `model["FIRSTNAME"]` je `undefined` → nastavlja
+2. `generationFormula` postoji → poziva backend:
+
+```typescript
+this.http.post('/uomback/common/lookupStatement', {
+  sql: "SELECT contact.firstname FROM contact WHERE contact.id = :P_CONTACT_ID",
+  parameters: { P_CONTACT_ID: 123456 }
+}).subscribe(result => {
+  model["FIRSTNAME"] = result;  // "Kenan"
+});
+```
+
+**Rezultat:**
+
+```
+db.model["Osnovnipaket-Fizicka"]["FIRSTNAME"] = "Kenan"
+```
+
+**Console output:**
+
+```
+=== ContentLoader ngOnInit ===
+items.name: FIRSTNAME
+items.label: Ime
+model PRIJE ValueManager.set: {}
+EXECUTING SQL: SELECT contact.firstname FROM contact WHERE contact.id = 123456
+SQL RESULT: "Kenan"
+model NAKON ValueManager.set: {"FIRSTNAME":"Kenan"}
+======================
+```
+
+**Ovo se ponavlja za SVA polja:**
+
+- `NAME` → SQL → "Testni korisnik"
+- `JOBTITLE` → SQL → "Direktor"
+- `PRIKLJUCAK_ADSL` → defaultValue → ""
+- `PUSER_EMAIL` → SQL → "kenan@test.com"
+- ...
+
+**Rezultat nakon SVIH input komponenti:**
+
+```typescript
+db.model = {
+  auto: {},
+  "Osnovneusluge": {},
+  "Osnovnipaket-Fizicka": {
+    FIRSTNAME: "Kenan",
+    NAME: "Testni korisnik",
+    JOBTITLE: "Direktor",
+    PRIKLJUCAK_ADSL: "",
+    PUSER_EMAIL: "kenan@test.com",
+    ACTION_PNK: "",
+    // ... sve ostale vrijednosti
+  }
+}
+```
+
+---
+
+### FAZA 5: Angular ngModel - Korisnikov unos
+
+**Gdje:** Input template (`input.template.html`)
+
+**Kada:** Korisnik mijenja vrijednost u input polju
+
+**Šta radi:**
+
+```html
+<!-- input.template.html -->
+<input
+  type="text"
+  [(ngModel)]="model[items.name]"
+  [placeholder]="items.label"
+/>
+```
+
+**Angular [(ngModel)] TWO-WAY BINDING:**
+
+1. **Model → View:** Kada `model[items.name]` se promijeni, input polje se ažurira
+2. **View → Model:** Kada korisnik unese nešto u input, `model[items.name]` se ažurira
+
+**Primjer:**
+
+Korisnik mijenja "Ime" iz "Kenan" → "John"
+
+```
+1. Korisnik upiše "John" u input
+   ↓
+2. Angular detektuje promjenu
+   ↓
+3. Angular automatski ažurira: model["FIRSTNAME"] = "John"
+   ↓
+4. Pošto je model = db.model["Osnovnipaket-Fizicka"] (REFERENCA!)
+   ↓
+5. Direktno se ažurira: db.model["Osnovnipaket-Fizicka"]["FIRSTNAME"] = "John"
+```
+
+**NEMA potrebe za dodatnim kodom!** Angular automatski sinhronizuje.
+
+**Rezultat:**
+
+```typescript
+db.model = {
+  auto: {},
+  "Osnovneusluge": {},
+  "Osnovnipaket-Fizicka": {
+    FIRSTNAME: "John",      ← PROMIJENIO KORISNIK!
+    NAME: "Testni korisnik",
+    JOBTITLE: "Direktor",
+    PRIKLJUCAK_ADSL: "1234567",  ← PROMIJENIO KORISNIK!
+    // ...
+  }
+}
+```
+
+---
+
+### FAZA 6: Finalni db.model - Sva polja popunjena
+
+Nakon što korisnik popuni SVA polja i doda child elemente (Tarifni paketi, itd.), `db.model` izgleda:
+
+```typescript
+db.model = {
+  auto: {},
+  "Osnovneusluge": {},
+  "Osnovnipaket-Fizicka": {
+    FIRSTNAME: "John",
+    NAME: "Test Company",
+    JOBTITLE: "CEO",
+    PRIKLJUCAK_ADSL: "1234567",
+    ACTION_PNK: "DA",
+    FRSEGSCLASS_CODE: "GOLD",
+    PUSER_EMAIL: "john@test.com",
+    DEFAULTCONTACTPHONE: "+387611234567",
+    OFFER_NAME: "Osnovni paket",
+    DEFAULTCONTACTEMAIL: "contact@test.com",
+    PQUANTITY_NUM: "1",
+    CCC_IND: "N"
+  },
+  "Tarifnipaketi": {
+    "Tarifnipaket1": {
+      TARIFF_CODE: "TP100",
+      TARIFF_NAME: "Super tarifa",
+      PRICE: "50.00"
+    }
+  },
+  "Zabranainfo": {},
+  "Preuzimanja": {}
+}
+```
+
+**db.output** takođe prati strukturu:
+
+```typescript
+db.output = {
+  "Osnovneusluge": {
+    active: true,
+    value: {
+      "Osnovnipaket-Fizicka": {
+        active: true,
+        value: db.model["Osnovnipaket-Fizicka"]  ← REFERENCA!
+      }
+    }
+  },
+  "Tarifnipaketi": { ... },
+  "Zabranainfo": { ... },
+  "Preuzimanja": { ... }
+}
+```
+
+---
+
+### FAZA 7: saveSuicapture() - Slanje na backend
+
+**Gdje:** `evidencija-usluge.component.ts`, linija ~368
+
+**Kada:** Korisnik klikne "Spasi"
+
+**Šta radi:**
+
+```typescript
+save() {
+  this.clicked = true;
+  this.spinner.show();
+  this.saveSuicapture();
+}
+
+saveSuicapture(params?: any) {
+  console.log('=== saveSuicapture START ===');
+  console.log('db.model (cijeli model):', this.db.model);
+  console.log('db.output (cijeli output):', this.db.output);
+
+  let body = {
+    id: this.basketnum,
+    processId: this.processId,
+    model: JSON.stringify({
+      model: this.db.model,           ← CIJELI popunjeni model!
+      output: this.setOutput()        ← Transformisani output
+    })
+  };
+
+  console.log('Request body:', body);
+  console.log('=== saveSuicapture END ===');
+
+  this.http.post('/pcrt/sui-capture', body).subscribe(response => {
+    // Backend čuva u SUI_CAPTURE tabeli
+    console.log('Suicapture saved!', response);
+  });
+}
+```
+
+**Request body:**
+
+```json
+{
+  "id": "999888777",
+  "processId": "10",
+  "model": "{\"model\":{\"auto\":{},\"Osnovneusluge\":{},\"Osnovnipaket-Fizicka\":{\"FIRSTNAME\":\"John\",\"NAME\":\"Test Company\",...}},\"output\":{...}}"
+}
+```
+
+**Backend čuva u SUI_CAPTURE:**
+
+```sql
+INSERT INTO SUI_CAPTURE (ID, PROCESS_ID, MODEL, CREATED)
+VALUES ('999888777', '10', '{"model":{"auto":{},"Osnovneusluge":{},...}, ...}', SYSDATE);
+```
+
+---
+
+## Vizualni dijagram - db.model transformacija
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 1: assignObjects()                                        │
+│  ════════════════════════                                       │
+│                                                                 │
+│  db.model = { auto: {} }                                        │
+│             ▲                                                   │
+│             └─ PRAZAN objekat, samo 'auto'                      │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 2: getDynamic()                                           │
+│  ═════════════════════                                          │
+│                                                                 │
+│  Backend vraća: structure.structure = [                         │
+│    {                                                            │
+│      name: "Osnovneusluge",                                     │
+│      elements: [                                                │
+│        {                                                        │
+│          name: "Osnovnipaket-Fizicka",                          │
+│          inputs: [ {name: "FIRSTNAME"}, {name: "NAME"}, ... ]   │
+│        }                                                        │
+│      ]                                                          │
+│    }                                                            │
+│  ]                                                              │
+│                                                                 │
+│  db.model = { auto: {} }  ← JOŠ UVIJEK PRAZAN!                  │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 3.1: DefaultBlock ngOnInit() - "Osnovne usluge"           │
+│  ═══════════════════════════════════════════════════            │
+│                                                                 │
+│  if (!this.model["Osnovneusluge"])                              │
+│    this.model["Osnovneusluge"] = {};                            │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "Osnovneusluge": {}    ← NOVI nested objekat!                │
+│  }                                                              │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 3.2: BasicBlock ngOnInit() - "Osnovni paket- Fizicka"     │
+│  ══════════════════════════════════════════════════════         │
+│                                                                 │
+│  if (!this.model["Osnovnipaket-Fizicka"])                       │
+│    this.model["Osnovnipaket-Fizicka"] = {};                     │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "Osnovneusluge": {},                                         │
+│    "Osnovnipaket-Fizicka": {}    ← NOVI nested objekat!         │
+│  }                                                              │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 3.3: BasicBlock prosleđuje model[items.name] djeci        │
+│  ═══════════════════════════════════════════════════            │
+│                                                                 │
+│  Template: [model]="model[items.name]"                          │
+│           = model["Osnovnipaket-Fizicka"]                       │
+│                                                                 │
+│  Input komponente dobijaju:                                     │
+│    model = REFERENCA na db.model["Osnovnipaket-Fizicka"]        │
+│                                                                 │
+│  KLJUČNO: Ovo je REFERENCA, ne kopija!                          │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 4: ValueManager.set() - Inicijalne vrijednosti            │
+│  ═══════════════════════════════════════════════════            │
+│                                                                 │
+│  Za svaki input:                                                │
+│    1. FIRSTNAME → SQL → "Kenan"                                 │
+│    2. NAME → SQL → "Testni korisnik"                            │
+│    3. JOBTITLE → SQL → "Direktor"                               │
+│    4. PRIKLJUCAK_ADSL → defaultValue → ""                       │
+│    ...                                                          │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "Osnovneusluge": {},                                         │
+│    "Osnovnipaket-Fizicka": {                                    │
+│      FIRSTNAME: "Kenan",           ← SQL rezultat               │
+│      NAME: "Testni korisnik",      ← SQL rezultat               │
+│      JOBTITLE: "Direktor",         ← SQL rezultat               │
+│      PRIKLJUCAK_ADSL: "",          ← defaultValue               │
+│      PUSER_EMAIL: "kenan@test.com" ← SQL rezultat               │
+│      // ... sve ostale vrijednosti                              │
+│    }                                                            │
+│  }                                                              │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 5: Angular [(ngModel)] - Korisnik mijenja vrijednosti     │
+│  ══════════════════════════════════════════════════════         │
+│                                                                 │
+│  Template: <input [(ngModel)]="model[items.name]">             │
+│                                                                 │
+│  Korisnik upiše "John" umjesto "Kenan":                         │
+│    1. Angular detektuje promjenu                                │
+│    2. Ažurira: model["FIRSTNAME"] = "John"                      │
+│    3. Pošto model = db.model["Osnovnipaket-Fizicka"] (REF!)     │
+│    4. Automatski: db.model["Osnovnipaket-Fizicka"]["FIRSTNAME"] │
+│                   = "John"                                      │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "Osnovneusluge": {},                                         │
+│    "Osnovnipaket-Fizicka": {                                    │
+│      FIRSTNAME: "John",             ← PROMIJENIO KORISNIK!      │
+│      NAME: "Test Company",          ← PROMIJENIO KORISNIK!      │
+│      JOBTITLE: "CEO",               ← PROMIJENIO KORISNIK!      │
+│      PRIKLJUCAK_ADSL: "1234567",    ← PROMIJENIO KORISNIK!      │
+│      // ...                                                     │
+│    }                                                            │
+│  }                                                              │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 6: Finalni db.model - Sva polja popunjena                 │
+│  ═══════════════════════════════════════════════                │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "Osnovneusluge": {},                                         │
+│    "Osnovnipaket-Fizicka": {                                    │
+│      FIRSTNAME: "John",                                         │
+│      NAME: "Test Company",                                      │
+│      JOBTITLE: "CEO",                                           │
+│      PRIKLJUCAK_ADSL: "1234567",                                │
+│      ACTION_PNK: "DA",                                          │
+│      FRSEGSCLASS_CODE: "GOLD",                                  │
+│      PUSER_EMAIL: "john@test.com",                              │
+│      DEFAULTCONTACTPHONE: "+387611234567",                      │
+│      OFFER_NAME: "Osnovni paket",                               │
+│      DEFAULTCONTACTEMAIL: "contact@test.com",                   │
+│      PQUANTITY_NUM: "1",                                        │
+│      CCC_IND: "N"                                               │
+│    },                                                           │
+│    "Tarifnipaketi": {                                           │
+│      "Tarifnipaket1": { TARIFF_CODE: "TP100", ... }             │
+│    },                                                           │
+│    "Zabranainfo": {},                                           │
+│    "Preuzimanja": {}                                            │
+│  }                                                              │
+│                                                                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  FAZA 7: saveSuicapture() - Slanje na backend                   │
+│  ═══════════════════════════════════════════════                │
+│                                                                 │
+│  Request body:                                                  │
+│  {                                                              │
+│    id: "999888777",                                             │
+│    processId: "10",                                             │
+│    model: JSON.stringify({                                      │
+│      model: db.model,         ← CIJELI popunjeni model!         │
+│      output: setOutput()      ← Transformisani output           │
+│    })                                                           │
+│  }                                                              │
+│                                                                 │
+│  Backend:                                                       │
+│    INSERT INTO SUI_CAPTURE (ID, PROCESS_ID, MODEL, ...)         │
+│    VALUES ('999888777', '10', '{"model":{...}, ...}', ...)      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ↓
+                   ┌────────────────────┐
+                   │  PODACI SAČUVANI!  │
+                   └────────────────────┘
+```
+
+---
+
+## FAQ - Najčešća pitanja
+
+### Q1: Zašto db.model["Osnovnipaket-Fizicka"] umjesto db.model["Osnovneusluge"]["Osnovnipaket-Fizicka"]?
+
+**A:** Zato što DefaultBlock prosleđuje `[model]="model"` (cijeli model), ne `[model]="model[items.name]"`. Ovo je dizajn odluka - svi blokovi su na istom nivou umjesto nested strukture.
+
+### Q2: Kako input komponente znaju gdje da stave vrijednost?
+
+**A:** BasicBlock prosleđuje `[model]="model[items.name]"` djeci, što je **REFERENCA** na `db.model["Osnovnipaket-Fizicka"]`. Kada input promijeni `model[items.name]`, on direktno mijenja originalni `db.model`.
+
+### Q3: Šta je Angular [(ngModel)] two-way binding?
+
+**A:** `[(ngModel)]` automatski sinhronizuje:
+- Model → View: Kada se `model[items.name]` promijeni, input se ažurira
+- View → Model: Kada korisnik unese nešto, `model[items.name]` se ažurira
+
+Nema potrebe za dodatnim event handlerima!
+
+### Q4: Kada se poziva ValueManager.set()?
+
+**A:** U `ContentLoader.ngOnInit()` nakon što se input komponenta renderuje. ValueManager postavlja inicijalnu vrijednost (iz SQL, defaultValue, ili prazan string).
+
+### Q5: Zašto je važno da je model = REFERENCA?
+
+**A:** Zato što se objekti u JavaScriptu prosleđuju po referenci, ne po vrijednosti. Kada BasicBlock proslijedi `model[items.name]` input komponenti, input direktno modifikuje originalni `db.model` objekat, ne kopiju.
+
+**Primjer:**
+
+```typescript
+let original = { name: "Kenan" };
+let referenca = original;      // REFERENCA, ne kopija
+referenca.name = "John";
+console.log(original.name);    // "John" ← Promijenio se original!
+```
+
+### Q6: Kako se dodaju child elementi (Tarifni paketi)?
+
+**A:** Isti proces se ponavlja:
+1. Child komponenta kreira `db.model["Tarifnipaketi"] = {}`
+2. Child sub-komponenta kreira `db.model["Tarifnipaketi"]["Tarifnipaket1"] = {}`
+3. Input komponente pune `db.model["Tarifnipaketi"]["Tarifnipaket1"][fieldName]`
+
+### Q7: Šta je db.output i kako se razlikuje od db.model?
+
+**A:**
+- `db.model` = **"flat" struktura** sa svim vrijednostima
+- `db.output` = **nested struktura** sa `active` i `value` properties
+
+`db.output` prati hijerarhiju (Osnovne usluge → Osnovni paket → inputs), dok `db.model` ima sve na istom nivou.
+
+### Q8: Zašto je auto: {} u db.model?
+
+**A:** `auto` property se koristi za auto-inkrement polja i druge sistemske vrijednosti koje nisu vezane za specifični blok.
+
+---
+
+## Console.log output - Cijeli flow
+
+Kada pokrenete aplikaciju sa svim console.log-ovima, vidjet ćete:
+
+```
+=== assignObjects() START ===
+db.model NAKON assign: {"auto":{}}
+db.output NAKON assign: {}
+db.params NAKON assign: {}
+=== assignObjects() END ===
+
+db.model NAKON assignObjects: {"auto":{}}
+
+HTTP GET /pcrt/order-entry?interactionId=16&productOfferId=1174...
+
+=== DefaultBlock ngOnInit ===
+items.name: Osnovneusluge
+items.label: Osnovne usluge
+items.code: 162
+model PRIJE kreiranja: {"auto":{}}
+model NAKON kreiranja: {"auto":{},"Osnovneusluge":{}}
+Kreiran nested objekat: model["Osnovneusluge"] = {}
+======================
+
+=== BasicBlock ngOnInit ===
+items.name: Osnovnipaket-Fizicka
+items.label: Osnovni paket- Fizicka
+items.code: 1174
+model PRIJE kreiranja: {"auto":{},"Osnovneusluge":{}}
+model NAKON kreiranja: {"auto":{},"Osnovneusluge":{},"Osnovnipaket-Fizicka":{}}
+Kreiran nested objekat: model["Osnovnipaket-Fizicka"] = {}
+======================
+
+=== ContentLoader ngOnInit ===
+items.name: FIRSTNAME
+items.label: Ime
+model PRIJE ValueManager.set: {}
+EXECUTING SQL: SELECT contact.firstname FROM contact WHERE contact.id = 123456
+SQL RESULT: "Kenan"
+model NAKON ValueManager.set: {"FIRSTNAME":"Kenan"}
+======================
+
+=== ContentLoader ngOnInit ===
+items.name: NAME
+items.label: Prezime/Naziv
+model PRIJE ValueManager.set: {"FIRSTNAME":"Kenan"}
+EXECUTING SQL: SELECT CASE WHEN contact.customertype = 'BUSINESS' THEN contact.companyname ELSE contact.lastname END FROM contact WHERE contact.id = 123456
+SQL RESULT: "Testni korisnik"
+model NAKON ValueManager.set: {"FIRSTNAME":"Kenan","NAME":"Testni korisnik"}
+======================
+
+... (ponavlja se za sva polja)
+
+=== validateinformations() START ===
+this.r (required fields): ["ca","ba","contact"]
+valid (nedostajuća polja): []
+✓ SVI required objekti postoje (ca, ba, contact)
+=== validateinformations() END ===
+
+=== saveSuicapture START ===
+db.model (cijeli model): {"auto":{},"Osnovneusluge":{},"Osnovnipaket-Fizicka":{"FIRSTNAME":"John","NAME":"Test Company",...}}
+db.output (cijeli output): {"Osnovneusluge":{"active":true,"value":{...}}}
+
+=== setOutput() START ===
+db.output PRIJE deep copy: {"Osnovneusluge":{"active":true,"value":{...}}}
+output NAKON deep copy (prije handleOutput): {"Osnovneusluge":{"active":true,"value":{...}}}
+output NAKON handleOutput (finalni output za backend): {"Osnovneusluge":{"active":true,"value":{...}}}
+=== setOutput() END ===
+
+Request body: {"id":"999888777","processId":"10","model":"{\"model\":{...},\"output\":{...}}"}
+=== saveSuicapture END ===
+
+HTTP POST /pcrt/sui-capture
+Suicapture saved! {status: "OK"}
+```
+
+---
+
+## Ključne tačke za zapamtiti
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. db.model kreće kao prazan objekat: { auto: {} }            │
+│                                                                 │
+│  2. DefaultBlock i BasicBlock kreiraju nested objekte:          │
+│     db.model["Osnovneusluge"] = {}                              │
+│     db.model["Osnovnipaket-Fizicka"] = {}                       │
+│                                                                 │
+│  3. BasicBlock prosleđuje model[items.name] = REFERENCA djeci   │
+│                                                                 │
+│  4. ValueManager.set() postavlja inicijalnu vrijednost:         │
+│     - generationFormula (SQL via backend)                       │
+│     - defaultValue (statička vrijednost)                        │
+│     - mappingRef (iz parametara)                                │
+│     - fallback (prazan string ili false)                        │
+│                                                                 │
+│  5. Angular [(ngModel)] automatski sinhronizuje View ↔ Model    │
+│                                                                 │
+│  6. Korisnik mijenja vrijednosti → db.model se automatski       │
+│     ažurira (zbog REFERENCE pattern-a)                          │
+│                                                                 │
+│  7. saveSuicapture() šalje cijeli db.model na backend           │
+│                                                                 │
+│  KLJUČNI KONCEPT: REFERENCA, ne kopija!                         │
+│  ════════════════════════════════════════                       │
+│  Kada BasicBlock proslijedi model[items.name] input             │
+│  komponenti, input dobija POKAZIVAČ na originalni               │
+│  db.model["Osnovnipaket-Fizicka"], ne novu kopiju.              │
+│  Zato sve promjene se automatski reflektuju u db.model!         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## KORAK 5: Od `<z-pageloader>` do popunjavanja `db.model` - Ultra-detaljni walkthrough sa STVARNIM podacima
+
+### Uvod
+
+U KORAK 4 smo vidjeli **ŠTA** se dešava sa `db.model` kroz 7 faza. Sada ćemo vidjeti **KAKO TAČNO** se to dešava - od momenta kada se `<z-pageloader>` renderuje do momenta kada `db.model` bude potpuno popunjen.
+
+Ovaj korak koristi **STVARNE podatke** iz konzole i backenda (order-entry response) da bi pokazao tačno kako sistem radi.
+
+**NAPOMENA:** Sve vrijednosti su `null` jer je `db.mod='disabled'`, što znači da se SQL upiti ne izvršavaju. U normalnom modu (`db.mod='new'` ili `db.mod='edit'`), vrijednosti bi bile popunjene sa podacima iz baze.
+
+---
+
+### STARTNA POZICIJA
+
+**Template:** `evidencija-usluge.template.html` (linija 265)
+
+```html
+<z-pageloader
+  [ngClass]="{inactive:!db.mod||db.mod=='disabled'}"
+  *ngIf="structure"
+  [model]="db.model"
+  [items]="structure.structure"
+  [output]="db.output"
+  [vparent]="db.valid"
+  [valid]="db.valid.children"
+  [parameters]="db.params">
+</z-pageloader>
+```
+
+**Stanje prije renderovanja:**
+
+```typescript
+// db.model je prazan (samo auto):
+db.model = { auto: {} }
+
+// db.mod = 'disabled' (zato su sve vrijednosti null)
+
+// structure.structure je array sa strukturom sa backenda (/pcrt/order-entry):
+structure.structure = [
+  {
+    label: "Flat paketi POTS",         // ← STVARNI podatak
+    name: "FlatpaketiPOTS",             // ← VAŽNO za kreiranje model property-ja
+    code: "979",
+    template: "default_block",          // ← Ovim se određuje koja komponenta se renderuje
+    elements: [
+      {
+        label: "Flat BH Telecom",       // ← STVARNI podatak
+        name: "FlatBHTelecom",          // ← VAŽNO za kreiranje model property-ja
+        code: "5919",
+        template: "basic_block",        // ← Ovim se određuje koja komponenta se renderuje
+        inputs: [
+          { name: "FIRSTNAME", label: "Ime", elementType: "text", template: "input",
+            value: { generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual" } },
+          { name: "NAME", label: "Prezime/Naziv", elementType: "text", template: "input",
+            value: { generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'LASTNAME') from dual" },
+            validation: { mandatory: true } },
+          { name: "JOBTITLE", label: "Funkcija", elementType: "select", template: "select",
+            value: { lookupStatement: "select code, displayname from roccupation " } },
+          { name: "PRIKLJUCAK_ADSL", label: "Na lokaciji", elementType: "select", template: "select",
+            validation: { mandatory: true } },
+          { name: "ACTION_PNK", label: "Da li ju u akciji", elementType: "text", template: "input",
+            disabled: true, visible: false },
+          { name: "FRSEGSCLASS_CODE", label: "Grupa podtipova", elementType: "text", template: "input" },
+          { name: "PUSER_EMAIL", label: "Trenutni email", elementType: "text", template: "input", visible: false },
+          { name: "DEFAULTCONTACTPHONE", label: "Kontakt telefon", elementType: "text", template: "input", visible: false },
+          { name: "OFFER_NAME", label: "Naziv paketa", elementType: "text", template: "input",
+            disabled: true, visible: false },
+          { name: "DEFAULTCONTACTEMAIL", label: "Email korisnika", elementType: "text", template: "input", visible: false },
+          { name: "PQUANTITY_NUM", label: "Količina", elementType: "text", template: "input", visible: false },
+          { name: "CCC_IND", label: "CCC indikator", elementType: "text", template: "input", visible: false }
+          // Ukupno 14 inputa
+        ],
+        children: [
+          { label: "Tarifni paketi", name: "Tarifnipaketi", code: "178", template: "default_block" },
+          { label: "Preuzimanja", name: "Preuzimanja", code: "164", template: "default_block" },
+          { label: "Dodatne usluge tehnicke (1)", name: "Dodatneuslugetehnicke(1)", code: "721", template: "default_block" },
+          { label: "Promjene", name: "Promjene", code: "740", template: "default_block" },
+          { label: "Fiksna  - ugovorni odnos", name: "Fiksnaugovorniodnos", code: "2016", template: "default_block" },
+          { label: "Dodavanje pratioca u nebrojčanu seriju", name: "Dodavanjepratiocaunebrojčanuseriju", code: "960", template: "default_block" },
+          { label: "Detaljni ispis poziva, redovno", name: "Detaljniispispoziva,redovno", code: "165", template: "default_block" },
+          { label: "Specifikacija za Prodaju van poslovnih prostorija - FIKSNA", name: "SpecifikacijazaProdajuvanposlovnihprostorijaFIKSNA", code: "1704", template: "default_block" },
+          { label: "Zabrana informacija", name: "Zabranainformacija", code: "742", template: "default_block" }
+          // Ukupno 9 children
+        ]
+      }
+    ]
+  }
+]
+
+// db.output, db.valid, db.params su također inicijalizovani
+```
+
+**Angular vidi:**
+- `*ngIf="structure"` je `true` (struktura je stigla sa backenda)
+- `<z-pageloader>` komponenta se renderuje
+
+---
+
+### DETALJNI KORACI
+
+#### KORAK 5.1: PageLoader renderuje template
+
+**File:** `pageloader.component.ts`
+- Selector: `z-pageloader`
+- Template: `pageloader.template.html`
+
+**PageLoader prima inputs:**
+
+```typescript
+@Input() items: InputObject;        // = structure.structure (array)
+@Input() model: object;             // = db.model (REFERENCA!)
+@Input() output?: DynamicOutput;    // = db.output
+@Input() vparent?: InputValid;      // = db.valid
+@Input() valid?: InputValid;        // = db.valid.children
+@Input() parameters?: object;       // = db.params
+```
+
+**Template:** `pageloader.template.html`
+
+```html
+<z-contentloader
+  *ngFor="let item of items"
+  [items]="item"
+  [vparent]="vparent"
+  [valid]="valid"
+  [model]="model"           <!-- REFERENCA na db.model! -->
+  [parent]="parent"
+  [parameters]="parameters"
+  [output]="output">
+</z-contentloader>
+```
+
+**VAŽNA NAPOMENA - Zašto `structure.structure`?**
+
+Možda si primjetio u template-u (linija 4480):
+```html
+[items]="structure.structure"  <!-- Zašto dva puta "structure"? -->
+```
+
+Ovo je **zbunjujuće imenovanje**, ali evo zašto:
+
+1. **`structure`** (prva instanca) = **cijeli response objekat** sa backenda:
+   ```typescript
+   // U evidencija-usluge.component.ts
+   this.http.post('/pcrt/order-entry', {...})
+     .subscribe(response => {
+       this.structure = response;  // ← Cijeli response objekat
+     });
+   ```
+
+2. **`.structure`** (druga instanca) = **property unutar response objekta** (array komponenti):
+   ```json
+   // Backend response:
+   {
+     "structure": [           // ← Property imena "structure"
+       {
+         "label": "Flat paketi POTS",
+         "name": "FlatpaketiPOTS",
+         "template": "default_block",
+         "elements": [...]
+       }
+     ]
+   }
+   ```
+
+**Dakle:**
+- `structure` (varijabla) = `{ structure: [...] }` (cijeli response)
+- `structure.structure` (property) = `[{...}, {...}]` (array komponenti)
+
+**Bolje bi bilo:**
+```typescript
+// Umjesto:
+[items]="structure.structure"
+
+// Jasnije bi bilo:
+this.components = response.structure;  // Izvuci array
+[items]="components"  // Koristi array direktno
+```
+
+Ali postojeći kod koristi `structure.structure` zbog legacy imenovanja. 😅
+
+---
+
+**Šta se dešava:**
+
+1. **PageLoader** iteruje kroz `items` sa `*ngFor`
+2. `items` = `structure.structure` = array sa 1 elementom (index 0):
+
+```typescript
+items[0] = {
+  label: "Flat paketi POTS",    // ← STVARNI podatak
+  name: "FlatpaketiPOTS",
+  code: "979",
+  template: "default_block",
+  elements: [ {...} ]
+}
+```
+
+3. Za **prvi (i jedini) element**, Angular kreira `<z-contentloader>` sa:
+
+```typescript
+// ContentLoader prima:
+items = structure.structure[0]  // "Flat paketi POTS"
+model = db.model               // { auto: {} }  ← REFERENCA!
+output = db.output
+vparent = db.valid
+valid = db.valid.children
+parameters = db.params
+parent = undefined
+```
+
+---
+
+#### KORAK 5.2: ContentLoader.ngOnInit() - "Flat paketi POTS"
+
+**File:** `contentloader.component.ts` (linija 26-54)
+
+**ContentLoader component:**
+- Selector: `z-contentloader`
+- Extends: `PageLoaderComponent`
+- Template: `contentloader.template.html`
+
+**ngOnInit() izvršavanje - STVARNI console.log output:**
+
+```typescript
+ngOnInit() {
+  // Linija 27: Validacija (validFrom/validTo)
+  if (this.db.mod != 'preview' && !this.isValid()) return;
+
+  /////////////////////  Ne diraj redoslijed izvrsavanja  /////////////////////
+
+  // Linija 30-33: Console logging - STVARNI output:
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);           // "FlatpaketiPOTS"
+  console.log('items.template:', this.items.template);   // "default_block"
+  console.log('items.code:', this.items.code);           // "979"
+
+  // Linija 35: Postavlja active flag
+  this.items.active = this.items.active != undefined ? this.items.active : true;
+  this.db.set(this.model, this.parent, this.pname);
+
+  // Linija 36: Postavlja initActivity
+  if (this.items.initActivity == undefined) {
+    this.items.initActivity = this.items.active ? true : false;
+  }
+
+  // Linija 38: Postavlja parametre i dependency
+  this.items.set || this.setParametars();
+  this.Depedency.set(this.items, this.model);
+  this.ValueManager.setDP(this.Depedency);
+
+  // Linija 40-42: Poziva ValueManager.set() - STVARNI console.log output:
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // Output: {"auto":{}}
+
+  // VAŽNO: Poziva se ValueManager.set() SAMO AKO template NIJE 'Inputoutput'
+  this.items.template == 'Inputoutput' || this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+  //  ↑ Za "default_block" template, ValueManager.set() postavlja property na null
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // Output: {"auto":{},"FlatpaketiPOTS":null}  ← Dodao property sa null vrijednošću!
+
+  // Linija 44-48: Postavlja output
+  this.getIndexName();  // this.index = this.items.name = "FlatpaketiPOTS"
+  console.log('index za output:', this.index);  // "FlatpaketiPOTS"
+
+  console.log('PRIJE setoutput - output:', this.output);
+  this.db.setoutput(this.items, this.model, this.output, this.index);
+  // ↑ Kreira output["FlatpaketiPOTS"] = { active: true, value: {...} }
+  console.log('NAKON setoutput - output[index]:', this.output[this.index]);
+
+  // Linija 51: Postavlja validaciju
+  this.Validation.set(this.items, this.valid, this.vparent, this.index, this.db.mod);
+
+  /////////////////////  Ne diraj redoslijed izvrsavanja  /////////////////////
+}
+```
+
+---
+
+### DETALJNO OBJAŠNJENJE SVAKE LINIJE U ngOnInit()
+
+#### **Linija 27: Validacija (validFrom/validTo)**
+
+```typescript
+if (this.db.mod != 'preview' && !this.isValid()) return;
+```
+
+**Šta radi:**
+- Provjerava da li je komponenta **validna po datumu** (validFrom/validTo)
+- Ako mod **nije** 'preview' I komponenta **nije validna**, prekida izvršavanje
+
+**isValid() metoda:**
+```typescript
+isValid(): boolean {
+  const now = new Date();
+  const validFrom = this.items.validFrom ? new Date(this.items.validFrom) : null;
+  const validTo = this.items.validTo ? new Date(this.items.validTo) : null;
+
+  // Ako nema validFrom i validTo, komponenta je validna
+  if (!validFrom && !validTo) return true;
+
+  // Provjerava da li je trenutni datum između validFrom i validTo
+  if (validFrom && now < validFrom) return false;  // Prerano
+  if (validTo && now > validTo) return false;      // Prekasno
+
+  return true;  // Datum je OK
+}
+```
+
+**Primjer:**
+```typescript
+// Komponenta je dostupna samo do 31.12.2024:
+items = {
+  name: "FlatpaketiPOTS",
+  validTo: "2024-12-31T23:59:59"
+}
+
+// Ako je današnji datum 15.01.2025:
+isValid() → false  // Komponenta nije više validna!
+ngOnInit() → return  // Prekida izvršavanje, komponenta se NE renderuje
+```
+
+**Zašto je ovo važno:**
+- Backend može poslati komponente koje su **vremenski ograničene** (npr. sezonske ponude)
+- Ova provjera osigurava da se **stare ponude ne prikazuju** nakon isteka roka
+
+---
+
+#### **Linija 35: Postavlja active flag**
+
+```typescript
+this.items.active = this.items.active != undefined ? this.items.active : true;
+```
+
+**Šta radi:**
+- Postavlja `items.active` na `true` ako nije već postavljen
+
+**Logika:**
+```typescript
+// Ako items.active JE definisan (true ili false):
+if (this.items.active != undefined) {
+  this.items.active = this.items.active;  // Zadrži postojeću vrijednost
+}
+// Ako items.active NIJE definisan (undefined):
+else {
+  this.items.active = true;  // Postavi na true (default)
+}
+```
+
+**Primjeri:**
+```typescript
+// Primjer 1: Backend je poslao active = false
+items = { name: "FlatpaketiPOTS", active: false }
+items.active = false  // Zadrži false
+
+// Primjer 2: Backend nije poslao active
+items = { name: "FlatpaketiPOTS" }
+items.active = true  // Postavi na true (default)
+
+// Primjer 3: Backend je poslao active = true
+items = { name: "FlatpaketiPOTS", active: true }
+items.active = true  // Zadrži true
+```
+
+**Zašto je ovo važno:**
+- `items.active` se koristi u template-u: `<span *ngIf="items.active">`
+- Ako je `active = false`, komponenta se **NE renderuje**
+- Default je `true` jer većina komponenti treba biti aktivna
+
+**Koja komponenta se konkretno NE renderuje?**
+
+Kada je `items.active = false`, **NE renderuje se `<z-dlcontent>` komponenta** u `contentloader.template.html`:
+
+```html
+<span *ngIf="items.active" class="...">
+  <z-dlcontent                          ← OVO SE NE RENDERUJE!
+    [template]="items.template"
+    [inputs]="{...}">
+  </z-dlcontent>
+</span>
+```
+
+Pošto se `<z-dlcontent>` ne renderuje, **NE kreira se finalna komponenta** prema `items.template`:
+
+| items.template | Komponenta koja se NE kreira |
+|----------------|------------------------------|
+| `"default_block"` | DefaultBlockComponent |
+| `"basic_block"` | BasicBlockComponent |
+| `"input"` | InputComponent |
+| `"select"` | SelectComponent |
+| `"checkbox"` | CheckboxComponent |
+| `"textarea"` | TextareaComponent |
+
+**Konkretni primjeri sa stvarnim komponentama:**
+
+**Primjer 1: FlatpaketiPOTS sa active = false**
+```typescript
+// Backend vraća:
+{
+  "label": "Flat paketi POTS",
+  "name": "FlatpaketiPOTS",
+  "active": false,              // ← Backend postavio na false!
+  "template": "default_block",
+  "elements": [...]
+}
+```
+
+**Rezultat:**
+```
+ContentLoader → items.active = false
+                     ↓
+Template: <span *ngIf="items.active"> → FALSE
+                     ↓
+<z-dlcontent> se NE RENDERUJE
+                     ↓
+DLContent NE kreira DefaultBlockComponent
+                     ↓
+❌ DefaultBlock "Flat paketi POTS" se NE PRIKAZUJE!
+❌ Sve child komponente se također NE prikazuju:
+   - BasicBlock "Flat BH Telecom"
+   - Svi inputi (FIRSTNAME, NAME, JOBTITLE, ...)
+   - Svi children (Tarifnipaketi, Preuzimanja, ...)
+```
+
+**Korisnik vidi:** (PRAZAN EKRAN - kao da komponenta ne postoji)
+
+**Primjer 2: Pojedinačni input sa active = false**
+```typescript
+// Backend vraća:
+{
+  "label": "Trenutni email",
+  "name": "PUSER_EMAIL",
+  "active": false,              // ← Backend postavio na false!
+  "template": "input"
+}
+```
+
+**Rezultat:**
+```
+❌ Input polje "Trenutni email" se NE PRIKAZUJE!
+```
+
+**Razlika: active vs visible**
+
+| Property | Ponašanje | DOM | Korištenje |
+|----------|-----------|-----|------------|
+| `active = false` | NE RENDERUJE SE | Element **NE postoji** u DOM-u | Trajno sakrivene komponente |
+| `visible = false` | RENDERUJE SE, ali sakriven | Element **postoji** u DOM-u (sakriven sa CSS) | Dinamičko show/hide (dependency) |
+
+```html
+<!-- active = false: -->
+<span *ngIf="items.active">           <!-- Angular NE KREIRA DOM element -->
+  <z-dlcontent>...</z-dlcontent>
+</span>
+
+<!-- visible = false: -->
+<div [ngClass]="{hidden: !items.visible}">  <!-- Angular KREIRA DOM, ali ga sakriva -->
+  <input [(ngModel)]="model[items.name]">
+</div>
+```
+
+**Kada backend postavlja active = false?**
+
+1. **Privremeno isključene opcije:**
+   ```typescript
+   { name: "SpecijalnaPromocija", active: false }  // Ponuda privremeno nedostupna
+   ```
+
+2. **Opcije specifične za tip korisnika:**
+   ```typescript
+   { name: "PoslovniPaket", active: customerType === 'BUSINESS' }  // Samo za business
+   ```
+
+3. **Opcije sa geografskim uslovima:**
+   ```typescript
+   { name: "FiberOptika", active: region === 'Sarajevo' }  // Samo u Sarajevu
+   ```
+
+4. **A/B testiranje:**
+   ```typescript
+   { name: "NoviPaket", active: Math.random() > 0.5 }  // 50% korisnika
+   ```
+
+---
+
+#### **Linija 35 (nastavak): db.set()**
+
+```typescript
+this.db.set(this.model, this.parent, this.pname);
+```
+
+**Šta radi:**
+- Postavlja **globalne reference** u Model servisu
+
+**db.set() metoda (iz model.service.ts):**
+```typescript
+set(model: object, parent: object, pname: string) {
+  this.currentModel = model;      // Trenutni model (može biti nested)
+  this.parentModel = parent;      // Parent model (cijeli db.model)
+  this.parentName = pname;        // Parent name (ime parent komponente)
+}
+```
+
+**Zašto je ovo važno:**
+- Dependency mehanizam treba **pristup trenutnom modelu**
+- ValueManager treba znati **koji je parent model**
+- Ovo omogućava da se **dinamički prati kontekst** komponente
+
+**Primjer:**
+```typescript
+// Za DefaultBlock "FlatpaketiPOTS":
+this.db.set(
+  db.model,      // model = { auto: {} }
+  undefined,     // parent = undefined (nema parent-a)
+  undefined      // pname = undefined
+);
+
+// Za BasicBlock "FlatBHTelecom" (child od DefaultBlock):
+this.db.set(
+  db.model,                    // model = cijeli db.model
+  db.model["FlatpaketiPOTS"],  // parent = nested model
+  "FlatpaketiPOTS"             // pname = ime parent-a
+);
+
+// Za input "FIRSTNAME" (child od BasicBlock):
+this.db.set(
+  db.model["FlatBHTelecom"],   // model = nested model (samo FlatBHTelecom dio)
+  db.model,                    // parent = cijeli db.model
+  "FlatBHTelecom"              // pname = ime parent-a
+);
+```
+
+---
+
+#### **Linija 36: Postavlja initActivity**
+
+```typescript
+if (this.items.initActivity == undefined) {
+  this.items.initActivity = this.items.active ? true : false;
+}
+```
+
+**Šta radi:**
+- Postavlja **početni active state** komponente
+- Ovo se koristi za **tracking da li je komponenta bila aktivna na startu**
+
+**Logika:**
+```typescript
+// Ako initActivity nije postavljen:
+if (this.items.initActivity == undefined) {
+  // Postavi initActivity = trenutni active state
+  this.items.initActivity = this.items.active;
+}
+// Ako je initActivity već postavljen, NE MIJENJAJ GA!
+```
+
+**Zašto je ovo važno:**
+- **Dependency mehanizam** može **dinamički mijenjati** `items.active`
+- `initActivity` pamti **originalni state** prije dependency promjena
+- Ovo omogućava **reset na početno stanje**
+
+**Primjer:**
+```typescript
+// Inicijalno:
+items.active = true
+items.initActivity = true  // Pamti originalni state
+
+// Dependency mijenja active:
+items.active = false  // Sakrio se zbog dependency
+
+// Reset na početno stanje:
+items.active = items.initActivity  // → true (vrati na original)
+```
+
+---
+
+#### **Linija 38: setParametars()**
+
+```typescript
+this.items.set || this.setParametars();
+```
+
+**Logika sa short-circuit evaluacijom:**
+```typescript
+// Ovo je ekvivalent:
+if (!this.items.set) {
+  this.setParametars();
+}
+```
+
+**Šta radi:**
+- **Ako** `items.set` je `false` ili `undefined`, poziva `setParametars()`
+- **Ako** `items.set` je `true`, **preskače** `setParametars()`
+
+**setParametars() metoda:**
+```typescript
+setParametars() {
+  // Postavlja parametre iz parent komponente
+  if (this.parameters) {
+    this.items.parameters = Object.assign(
+      {},
+      this.parameters,              // Parent parametri
+      this.items.parameters || {}   // Trenutni parametri (merge)
+    );
+  }
+
+  // Označava da su parametri već postavljeni
+  this.items.set = true;
+}
+```
+
+**Zašto je ovo važno:**
+- **Parametri se nasljeđuju** od parent komponente
+- Svaka komponenta može imati **svoje parametre + parent parametre**
+- `items.set = true` sprječava **duplo postavljanje parametara**
+
+**Primjer:**
+```typescript
+// DefaultBlock "FlatpaketiPOTS" ima parametre:
+parameters = {
+  P_PARENT_OFFER_ID: "5919",
+  P_OFFER_ID: "5919"
+}
+
+// BasicBlock "FlatBHTelecom" nasljeđuje + dodaje svoje:
+items.parameters = {
+  P_PARENT_OFFER_ID: "5919",    // ← Nasledio od parent-a
+  P_OFFER_ID: "5919",           // ← Nasledio od parent-a
+  ACTION_CODE: "NewPOTS",       // ← Dodao svoj parametar
+  P_CLASS_CODE: "ANALOG"        // ← Dodao svoj parametar
+}
+```
+
+---
+
+#### **Linija 38 (nastavak): Depedency.set()**
+
+```typescript
+this.Depedency.set(this.items, this.model);
+```
+
+**Šta radi:**
+- Registruje **dependency pravila** za ovu komponentu
+
+**Depedency.set() metoda:**
+```typescript
+set(items: InputObject, model: object) {
+  if (!items.dependency || !items.dependency.length) return;  // Nema dependency
+
+  // Prolazi kroz sve dependency pravila:
+  items.dependency.forEach(dep => {
+    // Registruje listener za source polje:
+    this.register(dep.source, dep.target, dep.effect, model);
+  });
+}
+```
+
+**Dependency pravila:**
+```json
+{
+  "dependency": [
+    {
+      "source": "PRIKLJUCAK_ADSL",      // Izvor (trigger polje)
+      "target": "ACTION_PNK",            // Meta (polje koje se mijenja)
+      "effect": "show",                  // Efekat (show/hide/enable/disable)
+      "condition": "value == '0'"        // Uslov
+    }
+  ]
+}
+```
+
+**Primjer izvršavanja:**
+```typescript
+// Korisnik odabere "IMA ADSL" (value = "0"):
+model["PRIKLJUCAK_ADSL"] = "0"
+
+// Dependency se aktivira:
+if (model["PRIKLJUCAK_ADSL"] == "0") {
+  items["ACTION_PNK"].visible = true;  // Prikaži polje ACTION_PNK
+}
+```
+
+**Zašto je ovo važno:**
+- Omogućava **dinamičko prikazivanje/sakrivanje** polja
+- Omogućava **uslovnu validaciju** (npr. obavezno samo ako...)
+- Omogućava **kompleksnu biznis logiku** bez hardkodovanja
+
+---
+
+#### **Linija 38 (nastavak): ValueManager.setDP()**
+
+```typescript
+this.ValueManager.setDP(this.Depedency);
+```
+
+**Šta radi:**
+- Prosleđuje **Dependency servis** u ValueManager
+- ValueManager treba dependency da bi mogao **triggerovati promjene**
+
+**setDP() metoda:**
+```typescript
+setDP(dependency: DependencyService) {
+  this.dependency = dependency;  // Čuva referencu na dependency servis
+}
+```
+
+**Zašto je ovo važno:**
+- ValueManager može **pozvati dependency.run()** nakon postavljanja vrijednosti
+- Ovo omogućava **automatsko triggerovanje dependency** kada se vrijednost promijeni
+
+**Primjer:**
+```typescript
+// ValueManager postavlja vrijednost:
+model["PRIKLJUCAK_ADSL"] = "0"
+
+// ValueManager automatski triggeruje dependency:
+this.dependency.run("PRIKLJUCAK_ADSL");  // Aktivira sva dependency pravila
+
+// Dependency mijenja vidljivost:
+items["ACTION_PNK"].visible = true;  // Prikaži ACTION_PNK
+```
+
+---
+
+#### **Linija 42: ValueManager.set()**
+
+```typescript
+this.items.template == 'Inputoutput' || this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+```
+
+**Logika sa short-circuit evaluacijom:**
+```typescript
+// Ovo je ekvivalent:
+if (this.items.template != 'Inputoutput') {
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+}
+```
+
+**Šta radi:**
+- **Ako** template je 'Inputoutput', **preskače** ValueManager.set()
+- **Ako** template **nije** 'Inputoutput', **poziva** ValueManager.set()
+
+**ValueManager.set() - već objašnjeno u KORAK 5.12, ali ukratko:**
+```typescript
+set(field, model, parameters, mod) {
+  // 1. Provjera: Da li polje već ima vrijednost?
+  if (model[field.name] !== undefined) return;
+
+  // 2. Ako je mod = 'disabled', postavi null:
+  if (mod === 'disabled' || mod === 'preview') {
+    model[field.name] = null;
+    return;
+  }
+
+  // 3. Izvršava SQL (generationFormula):
+  if (field.value?.generationFormula) {
+    this.dblookup(field.value.generationFormula, parameters)
+      .subscribe(result => {
+        model[field.name] = result;  // Postavi vrijednost iz baze
+      });
+    return;
+  }
+
+  // 4. Koristi defaultValue:
+  if (field.value?.defaultValue !== undefined) {
+    model[field.name] = field.value.defaultValue;
+    return;
+  }
+
+  // 5. Fallback:
+  model[field.name] = field.elementType === 'checkbox' ? false : '';
+}
+```
+
+**Zašto se preskače za 'Inputoutput'?**
+- 'Inputoutput' template ima **specijalnu logiku** koja **ručno upravlja** vrijednostima
+- Automatsko postavljanje bi **pregazilo** custom logiku
+
+---
+
+#### **Linija 44: getIndexName()**
+
+```typescript
+this.getIndexName();  // this.index = this.items.name = "FlatpaketiPOTS"
+```
+
+**Šta radi:**
+- Postavlja `this.index` na **jedinstveni identifikator** komponente
+
+**getIndexName() metoda:**
+```typescript
+getIndexName() {
+  // Ako items.name postoji, koristi ga:
+  if (this.items.name) {
+    this.index = this.items.name;  // "FlatpaketiPOTS"
+    return;
+  }
+
+  // Ako items.name ne postoji, generiši random ID:
+  this.index = 'component_' + Math.random().toString(36).substr(2, 9);
+}
+```
+
+**Zašto je ovo važno:**
+- `this.index` se koristi kao **ključ** u `db.output` objektu
+- `db.output[this.index]` čuva **output strukturu** za ovu komponentu
+- **Mora biti jedinstveno** da bi izbjeglo kolizije
+
+**Primjer:**
+```typescript
+// Za "FlatpaketiPOTS":
+this.index = "FlatpaketiPOTS"
+
+// Output se kreira na:
+db.output["FlatpaketiPOTS"] = { active: true, value: {...} }
+
+// Za "FlatBHTelecom":
+this.index = "FlatBHTelecom"
+
+// Output se kreira na:
+db.output["FlatBHTelecom"] = { active: true, value: {...} }
+```
+
+---
+
+#### **Linija 44 (nastavak): db.setoutput()**
+
+```typescript
+this.db.setoutput(this.items, this.model, this.output, this.index);
+```
+
+**Šta radi:**
+- Kreira **output strukturu** za ovu komponentu u `db.output` objektu
+
+**db.setoutput() metoda (iz model.service.ts):**
+```typescript
+setoutput(items: InputObject, model: object, output: object, index: string) {
+  // Kreira output objekat sa strukturom:
+  output[index] = {
+    active: items.active || true,           // Da li je komponenta aktivna
+    value: model,                           // REFERENCA na model!
+    items: {},                              // Za child elements
+    attr: {},                               // Za child inputs
+    spec: {}                                // Za child children
+  };
+
+  // Ako items ima elements, kreira prazne objekte:
+  if (items.elements) {
+    output[index].items = {};
+  }
+
+  // Ako items ima inputs, kreira prazne objekte:
+  if (items.inputs) {
+    output[index].attr = {};
+  }
+
+  // Ako items ima children, kreira prazne objekte:
+  if (items.children) {
+    output[index].spec = {};
+  }
+}
+```
+
+**Primjer:**
+```typescript
+// Za "FlatpaketiPOTS" (DefaultBlock):
+db.output = {
+  "FlatpaketiPOTS": {
+    active: true,
+    value: db.model,            // REFERENCA na cijeli db.model
+    items: {},                  // Za child elements (FlatBHTelecom)
+    attr: {},                   // Prazan (DefaultBlock nema inputs)
+    spec: {}                    // Prazan (DefaultBlock nema children na ovom nivou)
+  }
+}
+
+// Za "FlatBHTelecom" (BasicBlock):
+db.output["FlatpaketiPOTS"].items = {
+  "FlatBHTelecom": {
+    active: true,
+    value: db.model["FlatBHTelecom"],  // REFERENCA na nested model
+    items: {},                          // Prazan (BasicBlock nema elements)
+    attr: {},                           // Za child inputs (FIRSTNAME, NAME, ...)
+    spec: {}                            // Za child children (Tarifnipaketi, ...)
+  }
+}
+```
+
+**Zašto je ovo važno:**
+- **db.output** se koristi za **tracking state** svih komponenti
+- **Suicapture mehanizam** koristi output za **čuvanje podataka**
+- **Child komponente** čitaju `output[parent].items/attr/spec` da znaju gdje da se smjeste
+
+---
+
+#### **Linija 51: Validation.set()**
+
+```typescript
+this.Validation.set(this.items, this.valid, this.vparent, this.index, this.db.mod);
+```
+
+**Šta radi:**
+- Registruje **validaciona pravila** za ovu komponentu
+
+**Validation.set() metoda:**
+```typescript
+set(items: InputObject, valid: InputValid, vparent: InputValid, index: string, mod: string) {
+  if (!items.validation) return;  // Nema validacije
+
+  // Kreira validation objekat:
+  valid[index] = {
+    valid: true,                    // Da li je validna
+    errors: [],                     // Lista grešaka
+    mandatory: items.validation.mandatory || false,
+    minValue: items.validation.minValue,
+    maxValue: items.validation.maxValue,
+    formatPattern: items.validation.formatPattern,
+    // ... ostala validation pravila
+  };
+
+  // Ako je mandatory, odmah validira:
+  if (items.validation.mandatory && mod != 'disabled') {
+    this.validate(items, {});  // Validira odmah
+  }
+}
+```
+
+**Primjer:**
+```typescript
+// Za "NAME" input (mandatory: true):
+db.valid.children["NAME_5919"] = {
+  valid: false,                // Nije validno (prazan string)
+  errors: ["Ovo polje je obavezno"],
+  mandatory: true,
+  minValue: undefined,
+  maxValue: undefined,
+  formatPattern: undefined
+}
+
+// Kada korisnik upiše vrijednost:
+model["NAME"] = "Testni korisnik"
+
+// Validation.validate() ažurira:
+db.valid.children["NAME_5919"] = {
+  valid: true,                 // Sada je validno!
+  errors: [],                  // Nema grešaka
+  mandatory: true,
+  // ...
+}
+```
+
+**Zašto je ovo važno:**
+- **Blokira submit** ako ima nevalidnih polja
+- **Prikazuje error poruke** korisniku
+- **Omogućava kompleksnu validaciju** (regex, range, custom...)
+
+---
+
+### REDOSLIJED IZVRŠAVANJA - ZAŠTO JE VAŽAN?
+
+Komentar kaže: **"Ne diraj redoslijed izvrsavanja"**
+
+**Zašto?**
+
+```typescript
+// 1. Validacija MORA biti prva (da prekine ako nije validna)
+if (!this.isValid()) return;
+
+// 2. active flag MORA biti postavljen prije db.set()
+this.items.active = ...
+
+// 3. db.set() MORA biti prije Dependency (da dependency zna trenutni model)
+this.db.set(this.model, this.parent, this.pname);
+
+// 4. setParametars() MORA biti prije Dependency (da dependency ima parametre)
+this.setParametars();
+
+// 5. Dependency.set() MORA biti prije ValueManager.setDP() (da registruje pravila)
+this.Depedency.set(this.items, this.model);
+
+// 6. ValueManager.setDP() MORA biti prije ValueManager.set() (da može triggerovati dependency)
+this.ValueManager.setDP(this.Depedency);
+
+// 7. ValueManager.set() MORA biti prije getIndexName() (da postavi vrijednosti)
+this.ValueManager.set(...);
+
+// 8. getIndexName() MORA biti prije setoutput() (da output zna gdje da se kreira)
+this.getIndexName();
+
+// 9. setoutput() MORA biti prije Validation.set() (da validation zna output strukturu)
+this.db.setoutput(...);
+
+// 10. Validation.set() MORA biti zadnja (da validira nakon što su sve vrijednosti postavljene)
+this.Validation.set(...);
+```
+
+**Ako se promijeni redoslijed, mogu se desiti problemi:**
+- Dependency pravila ne rade jer parametri nisu postavljeni
+- Validacija ne radi jer output nije kreiran
+- Vrijednosti se ne postavljaju jer model nije registrovan
+- itd.
+
+---
+
+**KLJUČNA PRIMJEDBA:**
+
+Za "default_block" template, `ValueManager.set()` **postavlja property na null** zbog `db.mod='disabled'`:
+- default_block nije input komponenta, ali postavlja property zbog suicapture mehanizma
+- ValueManager.set() kreira property sa null vrijednošću (jer db.mod='disabled' sprječava SQL izvršavanje)
+
+**Rezultat nakon ngOnInit():**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": null  // ← Property kreiran sa null vrijednošću
+}
+
+db.output = {
+  "FlatpaketiPOTS": {
+    active: true,
+    value: db.model  // ← REFERENCA!
+  }
+}
+```
+
+---
+
+#### KORAK 5.3: ContentLoader renderuje template
+
+**File:** `contentloader.template.html`
+
+```html
+<span *ngIf="items.active" class="...">
+  <z-dlcontent
+    [template]="items.template"    <!-- "default_block" -->
+    [inputs]="{
+      items: items,                <!-- { label: 'Osnovne usluge', name: 'Osnovneusluge', ... } -->
+      model: model,                <!-- db.model (REFERENCA!) -->
+      parent: parent,              <!-- undefined -->
+      pname: pname,                <!-- undefined -->
+      vparent: vparent,            <!-- db.valid -->
+      valid: valid[index]||valid,  <!-- db.valid.children["Osnovneusluge"] || db.valid.children -->
+      parameters: items.parameters,<!-- undefined -->
+      output: output[index]||output[items.name]||output
+                                   <!-- db.output["Osnovneusluge"] -->
+    }">
+  </z-dlcontent>
+</span>
+```
+
+**Šta se dešava:**
+
+1. Provjerava `items.active` = `true` (postavljeno u ngOnInit)
+2. Renderuje `<z-dlcontent>` komponentu
+3. Prosleđuje `template="default_block"` i sve ostale inputs u `inputs` objektu
+
+**z-dlcontent prima:**
+
+```typescript
+template = "default_block"
+inputs = {
+  items: { label: "Flat paketi POTS", name: "FlatpaketiPOTS", code: "979", template: "default_block", elements: [...] },
+  model: db.model,  // REFERENCA!
+  parent: undefined,
+  pname: undefined,
+  vparent: db.valid,
+  valid: db.valid.children,
+  parameters: undefined,
+  output: db.output["FlatpaketiPOTS"]
+}
+```
+
+---
+
+#### KORAK 5.4: DLContent dinamički kreira DefaultBlockComponent
+
+**File:** `dlcontent.ts` (linija 51-83)
+
+**DLContent component:**
+- Selector: `z-dlcontent`
+- Template: `<div #target></div>` (prazan container)
+- Purpose: Dinamički kreira komponente na osnovu `template` property-ja
+
+**Inputs:**
+
+```typescript
+@Input() template: string;   // "default_block"
+@Input() inputs: object;     // { items, model, output, ... }
+```
+
+**Ključni kod - updateComponent() metoda (linija 65-75):**
+
+```typescript
+updateComponent() {
+  if (!this.isViewInitialized) { return; }
+  if (this.cmpRef) { this.cmpRef.destroy(); }
+
+  // Linija 69: Lookup u key objektu
+  // key["default_block"] = 1
+  let component: any = Components[key[this.template]];
+  //                             ↑ key["default_block"] = 1
+  //                   Components[1] = DefaultBlockComponent
+
+  // Linija 70: Kreira factory za DefaultBlockComponent
+  let factory = this.cfResolver.resolveComponentFactory(component);
+
+  // Linija 72: Dinamički kreira instancu DefaultBlockComponent
+  this.cmpRef = this.target.createComponent(factory)
+  // ↑ Kreira novu instancu DefaultBlockComponent i ubacuje je u <div #target>
+
+  // Linija 73: KLJUČNO! Prosleđuje sve inputs komponenti!
+  Object.assign(this.cmpRef.instance, this.inputs)
+  // ↑ Ovo je ekvivalent:
+  // defaultBlockInstance.items = inputs.items
+  // defaultBlockInstance.model = inputs.model  ← REFERENCA!
+  // defaultBlockInstance.parent = inputs.parent
+  // defaultBlockInstance.pname = inputs.pname
+  // defaultBlockInstance.vparent = inputs.vparent
+  // defaultBlockInstance.valid = inputs.valid
+  // defaultBlockInstance.parameters = inputs.parameters
+  // defaultBlockInstance.output = inputs.output
+
+  // Linija 74: Pokreće change detection
+  this.cdRef.detectChanges();
+}
+```
+
+**Mapiranje template → Component:**
+
+Iz `dlcontent.ts` (linija 16-47):
+
+```typescript
+export const key = {
+  basic_block: 0,      // → Components[0] = BasicBlockComponent
+  default_block: 1,    // → Components[1] = DefaultBlockComponent
+  checkblock: 2,       // → Components[2] = CheckBlockComponent
+  standard_popup: 3,   // → Components[3] = StandardPopupComponent
+  switchtab: 4,        // → Components[4] = SwitchTabComponent
+  form: 5,             // → Components[5] = FormComponent
+  button: 6,           // → Components[6] = ButtonComponent
+  checkbox: 7,         // → Components[7] = CheckboxComponent
+  input: 8,            // → Components[8] = InputComponent
+  number: 8,           // → Components[8] = InputComponent (ista kao input)
+  readonly: 8,         // → Components[8] = InputComponent (ista kao input)
+  popbutton: 9,        // → Components[9] = PopupButtonComponent
+  radio: 10,           // → Components[10] = RadioComponent
+  select: 11,          // → Components[11] = SelectComponent
+  textarea: 12,        // → Components[12] = TextareaComponent
+  date: 13,            // → Components[13] = DateComponent
+  // ... itd.
+};
+```
+
+**Rezultat:**
+
+DefaultBlockComponent instanca je kreirana sa:
+
+```typescript
+defaultBlockInstance = {
+  items: {
+    label: "Flat paketi POTS",      // ← STVARNI podatak
+    name: "FlatpaketiPOTS",
+    code: "979",
+    template: "default_block",
+    elements: [
+      {
+        label: "Flat BH Telecom",   // ← STVARNI podatak
+        name: "FlatBHTelecom",
+        code: "5919",
+        template: "basic_block",
+        inputs: [
+          { name: "FIRSTNAME", ... },
+          { name: "NAME", ... },
+          { name: "JOBTITLE", ... },
+          // ... 14 inputa ukupno
+        ],
+        children: [
+          { name: "Tarifnipaketi", ... },
+          { name: "Preuzimanja", ... },
+          // ... 9 children ukupno
+        ]
+      }
+    ]
+  },
+  model: db.model,  // ← REFERENCA! Pokazuje na ISTI objekat kao i db.model!
+  output: db.output["FlatpaketiPOTS"],
+  vparent: db.valid,
+  valid: db.valid.children,
+  parameters: undefined,
+  parent: undefined,
+  pname: undefined
+}
+```
+
+---
+
+#### KORAK 5.5: DefaultBlockComponent.ngOnInit() - KREIRANJE NESTED OBJEKTA!
+
+**File:** `defaultblock.component.ts` (linija 24-40)
+
+**STVARNI console.log output iz konzole:**
+
+```typescript
+ngOnInit() {
+  console.log('=== DefaultBlock ngOnInit ===');
+  console.log('items.name:', this.items.name);           // "FlatpaketiPOTS"
+  console.log('items.label:', this.items.label);         // "Flat paketi POTS"
+  console.log('items.code:', this.items.code);           // "979"
+  console.log('model PRIJE kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"FlatpaketiPOTS":null}
+  // ↑ Property već postoji (null), postavljen u ContentLoader.ngOnInit()
+
+  // Linija 31: KLJUČNA LINIJA - KREIRA NESTED OBJEKAT!
+  if (!this.model[this.items.name]) this.model[this.items.name] = {};
+  //     ↑ this.model = db.model (REFERENCA!)
+  //         this.items.name = "FlatpaketiPOTS"
+  //
+  // Provjerava: Da li db.model["FlatpaketiPOTS"] postoji i nije null/undefined/false?
+  //   - db.model["FlatpaketiPOTS"] = null (falsy vrijednost!)
+  //   - !null = true, dakle uslov je ispunjen
+  //   - Postavlja: db.model["FlatpaketiPOTS"] = {} (zamjenjuje null sa praznim objektom)
+  //
+  // EKVIVALENT:
+  //   if (!db.model["FlatpaketiPOTS"]) {  // !null = true
+  //     db.model["FlatpaketiPOTS"] = {};   // null → {}
+  //   }
+
+  console.log('model NAKON kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"FlatpaketiPOTS":{}}
+  // ↑ null je zamjenjen sa praznim objektom {}
+
+  console.log('Kreiran nested objekat: model["' + this.items.name + '"] = {}');
+  // Output: Kreiran nested objekat: model["FlatpaketiPOTS"] = {}
+
+  console.log('======================');
+
+  // Linija 37-39: Dependency logic (minimizacija itd.)
+  !this.items.dependency || !this.items.dependency.length || this.items.dependency.map((dependency) => {
+    if (dependency.effect === "minimize") { this.items.minimize = false; }
+  });
+}
+```
+
+**KRITIČNO RAZUMIJEVANJE:**
+
+Pošto je `this.model` **REFERENCA** na `db.model`, linija 31:
+
+```typescript
+if (!this.model[this.items.name]) this.model[this.items.name] = {};
+```
+
+**DIREKTNO MODIFIKUJE** `db.model`!
+
+**Zašto?**
+
+U JavaScriptu/TypeScriptu, objekti se prosleđuju **po referenci**, ne po vrijednosti:
+
+```typescript
+let original = { auto: {} };
+let referenca = original;      // REFERENCA, ne kopija!
+
+referenca["Osnovneusluge"] = {};
+
+console.log(original);
+// Output: { auto: {}, Osnovneusluge: {} }
+// ↑ original je također promijenjen!
+```
+
+**Rezultat:**
+
+```typescript
+// PRIJE ngOnInit():
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": null  // ← null vrijednost
+}
+
+// NAKON ngOnInit():
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {}  // ← null zamjenjen sa praznim objektom!
+}
+```
+
+**Console output - STVARNI iz konzole:**
+
+```
+=== DefaultBlock ngOnInit ===
+items.name: FlatpaketiPOTS
+items.label: Flat paketi POTS
+items.code: 979
+model PRIJE kreiranja: {"auto":{},"FlatpaketiPOTS":null}
+model NAKON kreiranja: {"auto":{},"FlatpaketiPOTS":{}}
+Kreiran nested objekat: model["FlatpaketiPOTS"] = {}
+======================
+```
+
+---
+
+#### KORAK 5.6: DefaultBlock renderuje template sa elements
+
+**File:** `defaultblock.template.html` (linija 1-25)
+
+```html
+<div class="z-default-block">
+  <div *ngIf="items.elementType === 'droppable' && dnd.start" class="dropArea" dnd-droppable (onDropSuccess)="drop($event)">
+    <h6>Drop</h6>
+  </div>
+
+  <header>
+    <h2 (click)="Depedency.run(items.dname)">{{items.label}}</h2>
+    <!-- Prikazuje: "Flat paketi POTS" -->
+    <i (click)="items.visible = !items.visible" class="expend fa {{ items.visible ? 'fa-angle-up': 'fa-angle-down'}}"></i>
+  </header>
+
+  <body [ngClass]="{ hidden: !items.visible }">
+    <p *ngIf="items.description">{{items.description}}</p>
+
+    <div>
+      <z-contentloader *ngFor="let message of items.messages" [items]="message" [model]="model" ...></z-contentloader>
+    </div>
+
+    <div [ngClass]="{ hidden: items.minimize}">
+      <!-- Linija 17: inputs (za DefaultBlock, items.inputs je undefined) -->
+      <z-contentloader *ngFor="let input of items.inputs" [items]="input" [pname]="pname" [model]="model" ...></z-contentloader>
+
+      <!-- Linija 18: KLJUČNA LINIJA - renderuje elements! -->
+      <z-contentloader
+        *ngFor="let element of items.elements"
+        [items]="element"           <!-- element = "Osnovni paket- Fizicka" -->
+        [pname]="pname"             <!-- undefined -->
+        [model]="model"             <!-- ← PROSLEĐUJE CIJELI MODEL! -->
+        [vparent]="valid"
+        [valid]="valid.children"
+        [parent]="parent"           <!-- undefined -->
+        [output]="output.items || output"
+        [parameters]="parameters">  <!-- undefined -->
+      </z-contentloader>
+    </div>
+
+    <div [ngClass]="{ hidden: items.minimize === false}" >
+      <!-- Linija 22: children -->
+      <z-contentloader *ngFor="let children of items.children" [items]="children" [pname]="pname" [model]="model" ...></z-contentloader>
+    </div>
+  </body>
+</div>
+```
+
+**Šta se dešava na liniji 18:**
+
+1. `*ngFor="let element of items.elements"` iteruje kroz `elements` array
+2. `items.elements` sadrži 1 element: "Flat BH Telecom"
+
+```typescript
+items.elements[0] = {
+  label: "Flat BH Telecom",    // ← STVARNI podatak
+  name: "FlatBHTelecom",
+  code: "5919",
+  template: "basic_block",     // ← Sada je basic_block!
+  inputs: [
+    { name: "FIRSTNAME", ... },
+    { name: "NAME", ... },
+    { name: "JOBTITLE", ... },
+    // ... 14 inputa ukupno
+  ],
+  children: [
+    { name: "Tarifnipaketi", ... },
+    { name: "Preuzimanja", ... },
+    // ... 9 children ukupno
+  ]
+}
+```
+
+3. Za **prvi (i jedini) element**, Angular kreira novi `<z-contentloader>` sa:
+
+```typescript
+// ContentLoader prima:
+items = {
+  label: "Flat BH Telecom",    // ← STVARNI podatak
+  name: "FlatBHTelecom",
+  code: "5919",
+  template: "basic_block",
+  inputs: [ {...}, {...}, ... ],
+  children: [ {...} ]
+}
+
+model = this.model         // ← DefaultBlock prosleđuje this.model
+     = db.model            // { auto: {}, "FlatpaketiPOTS": {} }
+                           // ← JOŠ UVIJEK CIJELI MODEL!
+
+output = this.output.items || this.output
+parameters = this.parameters  // undefined
+vparent = this.valid
+valid = this.valid.children
+parent = this.parent          // undefined
+pname = this.pname            // undefined
+```
+
+**KLJUČNA RAZLIKA:**
+
+DefaultBlock prosleđuje `[model]="model"` (cijeli model), **NE** `[model]="model[items.name]"` (nested dio).
+
+**Zašto?**
+
+Pogledaj zakomentiran kod u `defaultblock.template.html` (linija 26-50) - tamo se koristi `[model]="model[items.name]"`, ali trenutni aktivni kod (linija 1-25) koristi `[model]="model"`.
+
+Ovo znači da "Osnovni paket- Fizicka" (BasicBlock) prima **cijeli** `db.model`, ne samo `db.model["Osnovneusluge"]`.
+
+---
+
+#### KORAK 5.7-5.8: ContentLoader → DLContent → BasicBlockComponent
+
+Isti proces kao KORAK 5.2-5.4, ali sada za "basic_block" template:
+
+1. **ContentLoader.ngOnInit()** izvršava se za "Flat BH Telecom"
+2. **ContentLoader** renderuje `<z-dlcontent template="basic_block">`
+3. **DLContent.updateComponent()** kreira **BasicBlockComponent** instancu:
+
+```typescript
+// key["basic_block"] = 0
+let component = Components[0];  // BasicBlockComponent
+
+// Kreira instancu i prosleđuje inputs
+Object.assign(basicBlockInstance, {
+  items: {
+    label: "Flat BH Telecom",     // ← STVARNI podatak
+    name: "FlatBHTelecom",
+    code: "5919",
+    template: "basic_block",
+    inputs: [
+      { name: "FIRSTNAME", ... },
+      { name: "NAME", ... },
+      // ... 14 inputa ukupno
+    ],
+    children: [
+      { name: "Tarifnipaketi", ... },
+      // ... 9 children ukupno
+    ]
+  },
+  model: db.model,  // ← REFERENCA! { auto: {}, "FlatpaketiPOTS": {} }
+  output: db.output["FlatpaketiPOTS"].items || db.output["FlatpaketiPOTS"],
+  // ... ostali inputs
+});
+```
+
+---
+
+#### KORAK 5.9: BasicBlockComponent.ngOnInit() - DRUGI NESTED OBJEKAT!
+
+**File:** `basicblock.component.ts` (linija 20-32)
+
+**STVARNI console.log output iz konzole:**
+
+```typescript
+ngOnInit() {
+  console.log('=== BasicBlock ngOnInit ===');
+  console.log('items.name:', this.items.name);           // "FlatBHTelecom"
+  console.log('items.label:', this.items.label);         // "Flat BH Telecom"
+  console.log('items.code:', this.items.code);           // "5919"
+  console.log('model PRIJE kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":null}
+  // ↑ Primijetite: "loadOffer979":"5919" je dodan (to je select element iz actions)
+  // ↑ Primijetite: "FlatBHTelecom":null je dodan (iz ContentLoader.ngOnInit())
+
+  // Linija 27: KLJUČNA LINIJA - KREIRA DRUGI NESTED OBJEKAT!
+  if (!this.model[this.items.name]) this.model[this.items.name] = {};
+  //     ↑ this.model = db.model (REFERENCA!)
+  //         this.items.name = "FlatBHTelecom"
+  //
+  // Provjerava: Da li db.model["FlatBHTelecom"] postoji i nije null/undefined/false?
+  //   - db.model["FlatBHTelecom"] = null (falsy vrijednost!)
+  //   - !null = true, dakle uslov je ispunjen
+  //   - Postavlja: db.model["FlatBHTelecom"] = {} (zamjenjuje null sa praznim objektom)
+  //
+  // EKVIVALENT:
+  //   if (!db.model["FlatBHTelecom"]) {  // !null = true
+  //     db.model["FlatBHTelecom"] = {};   // null → {}
+  //   }
+
+  console.log('model NAKON kreiranja:', JSON.stringify(this.model));
+  // Output: {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":{}}
+  // ↑ null je zamjenjen sa praznim objektom {}
+
+  console.log('Kreiran nested objekat: model["' + this.items.name + '"] = {}');
+  // Output: Kreiran nested objekat: model["FlatBHTelecom"] = {}
+
+  console.log('======================');
+}
+```
+
+**Rezultat:**
+
+```typescript
+// PRIJE ngOnInit():
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",      // ← Dodan od strane select elementa
+  "FlatBHTelecom": null         // ← Dodan od strane ContentLoader
+}
+
+// NAKON ngOnInit():
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {}  // ← null zamjenjen sa praznim objektom!
+}
+```
+
+**Console output - STVARNI iz konzole:**
+
+```
+=== BasicBlock ngOnInit ===
+items.name: FlatBHTelecom
+items.label: Flat BH Telecom
+items.code: 5919
+model PRIJE kreiranja: {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":null}
+model NAKON kreiranja: {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":{}}
+Kreiran nested objekat: model["FlatBHTelecom"] = {}
+======================
+```
+
+---
+
+#### KORAK 5.10: BasicBlock renderuje template sa inputs - KLJUČNA RAZLIKA!
+
+**File:** `basicblock.template.html` (linija 1-12)
+
+```html
+<span *ngIf="!model['minimize']">
+  <z-contentloader *ngFor="let message of items.messages" [items]="message" [model]="model[items.name]" ...></z-contentloader>
+</span>
+
+<div class="z-basic-block" [ngClass]="{hidden:!items.visible, inactive:items.blocked}" *ngIf="output.active">
+  <!-- Linija 6: elements -->
+  <z-contentloader *ngFor="let element of items.elements" [items]="element" [pname]="pname" [model]="model[items.name]" ...></z-contentloader>
+
+  <!-- Linija 8-9: inputs - KLJUČNA LINIJA! -->
+  <z-contentloader
+    *ngFor="let input of items.inputs"
+    [items]="input"
+    [pname]="pname"                    <!-- undefined -->
+    [model]="model[items.name]"        <!-- ← PROSLEĐUJE NESTED DIO! -->
+    [vparent]="valid"
+    [valid]="valid.children"
+    [output]="output.attr || output"
+    [parent]="model"                   <!-- ← parent je CIJELI model -->
+    [parameters]="parameters">
+  </z-contentloader>
+
+  <!-- Linija 10-11: children -->
+  <z-contentloader *ngFor="let children of items.children" [items]="children" [pname]="pname" [model]="model[items.name]" ...></z-contentloader>
+</div>
+```
+
+**OVDJE JE KLJUČNA RAZLIKA!**
+
+**DefaultBlock vs BasicBlock:**
+
+| Komponenta | Prosleđuje djeci |
+|------------|------------------|
+| DefaultBlock | `[model]="model"` (cijeli model) |
+| BasicBlock | `[model]="model[items.name]"` (nested dio) |
+
+**Šta se dešava na liniji 8-9:**
+
+1. `*ngFor="let input of items.inputs"` iteruje kroz `inputs` array
+2. `items.inputs` sadrži 11 inputa: FIRSTNAME, NAME, JOBTITLE, itd.
+3. Za **prvi input** (FIRSTNAME), Angular kreira `<z-contentloader>` sa:
+
+```typescript
+// ContentLoader prima:
+items = {
+  name: "FIRSTNAME",
+  label: "Ime",
+  componentType: "input",
+  template: "input",
+  generationFormula: "SELECT contact.firstname FROM contact WHERE contact.id = :P_CONTACT_ID",
+  validation: { mandatory: false, ... },
+  // ... ostale properties
+}
+
+model = this.model[this.items.name]      // ← NESTED DIO!
+     = this.model["FlatBHTelecom"]
+     = db.model["FlatBHTelecom"]        // ← REFERENCA NA NESTED OBJEKAT!
+     = {}                                // ← Trenutno prazan objekat
+
+parent = this.model                      // ← CIJELI MODEL!
+      = db.model                         // ← REFERENCA NA CIJELI MODEL!
+
+pname = this.pname  // undefined
+```
+
+**KRITIČNO RAZUMIJEVANJE:**
+
+```typescript
+// BasicBlock prima:
+this.model = db.model  // REFERENCA na cijeli model
+
+// BasicBlock prosleđuje djeci:
+[model] = this.model[this.items.name]
+        = this.model["FlatBHTelecom"]
+        = db.model["FlatBHTelecom"]  // REFERENCA na nested objekat!
+
+// Pošto je model[items.name] = db.model["FlatBHTelecom"],
+// kada input komponenta dodaje property:
+//   model["FIRSTNAME"] = null  (jer db.mod='disabled')
+// to je EKVIVALENT:
+//   db.model["FlatBHTelecom"]["FIRSTNAME"] = null
+```
+
+**Ali trenutno db.model["FlatBHTelecom"] je prazan objekat {}!**
+
+To će se promijeniti u sljedećem koraku...
+
+---
+
+#### KORAK 5.11: ContentLoader.ngOnInit() za input FIRSTNAME
+
+ContentLoader ponovo izvršava `ngOnInit()`, ali sada za **input** komponentu:
+
+**STVARNI console.log output iz konzole:**
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);           // "FIRSTNAME"
+  console.log('items.template:', this.items.template);   // "input"
+  console.log('items.code:', this.items.code);           // "FIRSTNAME"
+
+  // ... isti kod kao prije (linija 35-38) ...
+
+  // Linija 40-42: OVDJE SE DEŠAVA MAGIJA!
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // Output: {}  ← Prazan jer je model = db.model["FlatBHTelecom"]
+
+  this.items.template == 'Inputoutput' || this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+  // ↑ Pošto template je "input" (NE "Inputoutput"), poziva se ValueManager.set()!
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // Output: {"FIRSTNAME":null}  ← Property kreiran sa null vrijednošću!
+  // ↑ NAPOMENA: null jer je db.mod='disabled' (SQL se ne izvršava)
+
+  // ... ostatak koda (setoutput, validation) ...
+}
+```
+
+**KLJUČNO:** Za "input" template, `ValueManager.set()` **RADI**, ali vrijednost je `null` jer `db.mod='disabled'`!
+
+---
+
+#### KORAK 5.12: ValueManager.set() - POSTAVLJANJE NA NULL (zbog db.mod='disabled')!
+
+**File:** `value.manager.ts` (linija ~25-33)
+
+**STVARNA logika sa stvarnim console.log outputom:**
+
+```typescript
+set(field: InputObject, model: object, parameters?: any, mod?: string) {
+  // field.name = "FIRSTNAME"
+  // model = db.model["FlatBHTelecom"]  (REFERENCA!)
+  // parameters = db.params
+  // mod = "disabled"  ← KLJUČNO!
+
+  console.log('=== ValueManager.set() START ===');
+  console.log('field.name:', field.name);           // "FIRSTNAME"
+  console.log('model PRIJE:', model);               // {}
+  console.log('mod:', mod);                         // "disabled"
+  console.log('generationFormula:', field.value?.generationFormula);
+  // Output: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual"
+
+  // 1. Provjera: Da li polje već ima vrijednost?
+  if (model[field.name] !== undefined) {
+    console.log('Polje već ima vrijednost, preskačem');
+    return;
+  }
+  // model["FIRSTNAME"] je undefined → nastavlja
+
+  // 2. Provjera: Da li je mod = 'disabled'?
+  if (mod === 'disabled' || mod === 'preview') {
+    console.log('mod je disabled/preview, postavljam property na null');
+
+    // KLJUČNO: Zbog disabled moda, NE izvršava SQL!
+    // Umjesto toga, postavlja property na null
+    model[field.name] = null;
+    //  ↑ model = db.model["FlatBHTelecom"] (REFERENCA!)
+    //    field.name = "FIRSTNAME"
+    //
+    // Ovo je EKVIVALENT:
+    //   db.model["FlatBHTelecom"]["FIRSTNAME"] = null
+
+    console.log('model NAKON:', model);  // {"FIRSTNAME":null}
+    return;
+  }
+
+  // 3. generationFormula - Izvršava SQL via backend (SAMO AKO mod NIJE disabled!)
+  if (field.value?.generationFormula) {
+    console.log('Koristim generationFormula (SQL)');
+
+    // Poziva backend da izvrši SQL
+    this.dblookup(field.value.generationFormula, parameters).subscribe(result => {
+      console.log('SQL rezultat:', result);  // npr. "Kenan"
+
+      // KLJUČNO: Postavlja vrijednost u model!
+      model[field.name] = result;
+      //  ↑ model = db.model["FlatBHTelecom"] (REFERENCA!)
+      //    field.name = "FIRSTNAME"
+      //    result = "Kenan"
+      //
+      // Ovo je EKVIVALENT:
+      //   db.model["FlatBHTelecom"]["FIRSTNAME"] = "Kenan"
+
+      console.log('model NAKON SQL:', model);  // {"FIRSTNAME":"Kenan"}
+    });
+    return;
+  }
+
+  // 3. defaultValue - Statička default vrijednost
+  if (field.defaultValue !== undefined) {
+    console.log('Koristim defaultValue');
+    model[field.name] = field.defaultValue;
+    return;
+  }
+
+  // 4. mappingRef - Uzima vrijednost iz parametara
+  if (field.mappingRef && parameters[field.mappingRef] !== undefined) {
+    console.log('Koristim mappingRef');
+    model[field.name] = parameters[field.mappingRef];
+    return;
+  }
+
+  // 5. Fallback - Prazan string ili false
+  console.log('Fallback - prazan string');
+  model[field.name] = field.componentType === 'checkbox' ? false : '';
+
+  console.log('=== ValueManager.set() END ===');
+}
+```
+
+**dblookup() metoda:**
+
+```typescript
+dblookup(sql: string, parameters: any): Observable<any> {
+  return this.http.post('/uomback/common/lookupStatement', {
+    sql: sql,
+    parameters: parameters
+  }).map(response => response.json());
+}
+```
+
+**Izvršavanje za FIRSTNAME sa db.mod='disabled':**
+
+```
+=== ValueManager.set() START ===
+field.name: FIRSTNAME
+model PRIJE: {}
+mod: disabled
+generationFormula: select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual
+mod je disabled/preview, postavljam property na null
+model NAKON: {"FIRSTNAME":null}
+=== ValueManager.set() END ===
+```
+
+**NAPOMENA:** SQL se **NE IZVRŠAVA** jer je `db.mod='disabled'`. Umjesto toga, property se postavlja na `null`.
+
+**Rezultat:**
+
+```typescript
+// model je REFERENCA na db.model["FlatBHTelecom"]
+// Dakle:
+db.model["FlatBHTelecom"] = {
+  FIRSTNAME: null  // ← PRVA VRIJEDNOST (null zbog disabled moda)!
+}
+
+// Kompletan db.model:
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: null  // ← NOVA VRIJEDNOST (null!)
+  }
+}
+```
+
+**Kada bi mod bio 'new' ili 'edit' (normalan rad):**
+
+```
+=== ValueManager.set() START ===
+field.name: FIRSTNAME
+model PRIJE: {}
+mod: new
+generationFormula: select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual
+Koristim generationFormula (SQL)
+
+HTTP POST /uomback/common/lookupStatement
+  Request Body:
+    {
+      "sql": "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual",
+      "parameters": { "P_CLASS_CODE": "ANALOG", "P_CA_ID": 123456 }
+    }
+
+Backend executes SQL...
+Backend returns: "Kenan"
+
+SQL rezultat: "Kenan"
+model["FIRSTNAME"] = "Kenan"
+model NAKON SQL: {"FIRSTNAME":"Kenan"}
+=== ValueManager.set() END ===
+```
+
+**Tada bi rezultat bio:**
+
+```typescript
+db.model["FlatBHTelecom"] = {
+  FIRSTNAME: "Kenan"  // ← PRAVA VRIJEDNOST iz baze!
+}
+```
+
+---
+
+#### KORAK 5.13: DLContent kreira InputComponent
+
+**DLContent.updateComponent():**
+
+```typescript
+// key["input"] = 8
+let component = Components[8];  // InputComponent
+
+let factory = this.cfResolver.resolveComponentFactory(component);
+this.cmpRef = this.target.createComponent(factory)
+
+// Prosleđuje inputs
+Object.assign(this.cmpRef.instance, {
+  items: { name: "FIRSTNAME", label: "Ime", template: "input", ... },
+  model: db.model["FlatBHTelecom"],  // REFERENCA!
+  output: db.output["FlatpaketiPOTS"].attr || db.output["FlatpaketiPOTS"],
+  vparent: db.valid,
+  valid: db.valid.children,
+  parent: db.model,  // CIJELI model!
+  parameters: db.params
+});
+```
+
+---
+
+#### KORAK 5.14: InputComponent renderuje template sa ngModel - TWO-WAY BINDING!
+
+**File:** `input.template.html` (linija 1-30)
+
+```html
+<div class="z-inputs" *ngIf="items.visible" dnd-droppable (onDropSuccess)="dropInput($event)" [dropEnabled]="items.drop">
+  <label *ngIf="items.elementType !== 'date'" [ngClass]="{required:items.validation.mandatory}">
+    {{items.label}}  <!-- "Ime" -->
+  </label>
+
+  <input
+    *ngIf="items.elementType !== 'date'"
+    [ngClass]="{readonly: items.template === 'readonly', inactive:db.mod=='preview', invalid:!items.is.valid }"
+    [id]="items.dname"
+    [name]="items.dname"
+    [(ngModel)]="model[items.name]"      <!-- ← ANGULAR TWO-WAY BINDING! -->
+    [disabled]="items.disabled?'disabled':'false'"
+    [readonly]="items.disabled?'readonly':false"
+    [required]="items.validation.mandatory ? model[items.name] ? false:true:false"
+    [min]="!items.validation.minValue || items.validation.minValue"
+    [max]="!items.validation.maxValue || items.validation.maxValue"
+    [maxlength]="!items.validation.maxValue || items.validation.maxValue"
+    [pattern]="items.validation.formatPattern ? items.validation.formatPattern:''"
+    [type]="items.elementType || 'text'"
+    (focusout)="Validation.validate(items, parameters);"
+    (change)="Depedency.depend(items.dname);"
+  />
+</div>
+```
+
+**Angular [(ngModel)] Two-Way Binding:**
+
+```typescript
+// InputComponent prima:
+this.items.name = "FIRSTNAME"
+this.model = db.model["FlatBHTelecom"]  // REFERENCA!
+
+// Template koristi:
+[(ngModel)]="model[items.name]"
+          = model["FIRSTNAME"]
+          = db.model["FlatBHTelecom"]["FIRSTNAME"]
+```
+
+**Kako radi [(ngModel)]:**
+
+`[(ngModel)]` je skraćenica za:
+- `[ngModel]="..."` - property binding (Model → View)
+- `(ngModelChange)="... = $event"` - event binding (View → Model)
+
+**Automatska sinhronizacija:**
+
+1. **Inicijalno prikazivanje (Model → View):**
+   - Angular čita `model["FIRSTNAME"]` = `null`
+   - Prikazuje **prazan input** (jer je null, a ne string)
+   - Korisnik vidi: `[             ]` (prazno polje)
+
+2. **Korisnik mijenja vrijednost (View → Model):**
+   - Korisnik upiše "Kenan" u input
+   - Angular detektuje promjenu (via `input` event)
+   - Angular automatski poziva: `model["FIRSTNAME"] = "Kenan"`
+   - Pošto je `model` REFERENCA na `db.model["FlatBHTelecom"]`
+   - Promjena se automatski reflektuje:
+
+```typescript
+// PRIJE korisničke promjene:
+db.model["FlatBHTelecom"]["FIRSTNAME"] = null
+
+// Korisnik upisuje "Kenan" → Angular automatski ažurira:
+db.model["FlatBHTelecom"]["FIRSTNAME"] = "Kenan"
+
+// Korisnik mijenja na "John" → Angular automatski ažurira:
+db.model["FlatBHTelecom"]["FIRSTNAME"] = "John"
+
+// NEMA POTREBE ZA DODATNIM KODOM!
+```
+
+**NEMA event handler-a, NEMA callback-a, NEMA ručnog ažuriranja!**
+
+Angular automatski sinhronizuje model i view u oba smjera!
+
+---
+
+#### KORAK 5.15: Proces se ponavlja za SVA polja
+
+Isti proces (KORAK 5.11-5.14) se ponavlja za **SVA polja** u `items.inputs`:
+
+**Lista inputa (STVARNI iz order-entry strukture):**
+
+1. **FIRSTNAME** (Ime) - template: input, generationFormula: SQL - visible: true
+2. **NAME** (Prezime/Naziv) - template: input, generationFormula: SQL, mandatory: true - visible: true
+3. **JOBTITLE** (Funkcija) - template: select, lookupStatement: SQL - visible: true
+4. **PRIKLJUCAK_ADSL** (Na lokaciji) - template: select, data: [IMA ADSL, NEMA ADSL], mandatory: true - visible: true
+5. **ACTION_PNK** (Da li ju u akciji) - template: input, generationFormula: SQL, disabled: true - visible: false
+6. **FRSEGSCLASS_CODE** (Grupa podtipova) - template: input, generationFormula: SQL - visible: true
+7. **PUSER_EMAIL** (Trenutni email) - template: input, generationFormula: SQL - visible: false
+8. **FIRSTNAME** (Ime) - duplikat, template: input, generationFormula: SQL - visible: false
+9. **NAME** (Prezime/Naziv korisnika) - duplikat, template: input, generationFormula: SQL - visible: false
+10. **DEFAULTCONTACTPHONE** (Kontakt telefon) - template: input, generationFormula: SQL - visible: false
+11. **OFFER_NAME** (Naziv paketa) - template: input, generationFormula: SQL, disabled: true - visible: false
+12. **DEFAULTCONTACTEMAIL** (Email korisnika) - template: input, generationFormula: SQL - visible: false
+13. **PQUANTITY_NUM** (Količina) - template: input, generationFormula: SQL - visible: false
+14. **CCC_IND** (CCC indikator) - template: input, generationFormula: SQL - visible: false
+
+**Za svaki input:**
+1. ContentLoader.ngOnInit() → ValueManager.set()
+2. DLContent → InputComponent/SelectComponent
+3. Komponenta renderuje sa [(ngModel)]
+
+**Nakon što se SVA polja inicijalizuju (sa db.mod='disabled'):**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: null,              // ← null zbog disabled moda
+    NAME: null,                   // ← null zbog disabled moda
+    JOBTITLE: null,               // ← null zbog disabled moda
+    PRIKLJUCAK_ADSL: null,        // ← null zbog disabled moda
+    ACTION_PNK: null,             // ← null zbog disabled moda
+    FRSEGSCLASS_CODE: null,       // ← null zbog disabled moda
+    PUSER_EMAIL: null,            // ← null zbog disabled moda
+    DEFAULTCONTACTPHONE: null,    // ← null zbog disabled moda
+    OFFER_NAME: null,             // ← null zbog disabled moda
+    DEFAULTCONTACTEMAIL: null,    // ← null zbog disabled moda
+    PQUANTITY_NUM: null,          // ← null zbog disabled moda
+    CCC_IND: null                 // ← null zbog disabled moda
+  }
+}
+```
+
+**Korisnik mijenja vrijednosti:**
+
+- Upiše "Kenan" u polju "Ime"
+  - Angular automatski: `db.model["FlatBHTelecom"]["FIRSTNAME"] = "Kenan"`
+- Upiše "Testni korisnik" u polju "Prezime/Naziv"
+  - Angular automatski: `db.model["FlatBHTelecom"]["NAME"] = "Testni korisnik"`
+- Bira "Direktor" u polju "Funkcija" (select dropdown)
+  - Angular automatski: `db.model["FlatBHTelecom"]["JOBTITLE"] = "Direktor"`
+- Bira "IMA ADSL" u polju "Na lokaciji"
+  - Angular automatski: `db.model["FlatBHTelecom"]["PRIKLJUCAK_ADSL"] = "0"`
+
+**Finalni db.model nakon korisničkih promjena:**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: "Kenan",                      // ← Unio korisnik
+    NAME: "Testni korisnik",                 // ← Unio korisnik
+    JOBTITLE: "Direktor",                    // ← Odabrao korisnik
+    PRIKLJUCAK_ADSL: "0",                    // ← Odabrao korisnik (IMA ADSL)
+    ACTION_PNK: null,                        // ← Ostao null (disabled field)
+    FRSEGSCLASS_CODE: "GOLD",                // ← Unio korisnik
+    PUSER_EMAIL: null,                       // ← Ostao null (visible: false)
+    DEFAULTCONTACTPHONE: null,               // ← Ostao null (visible: false)
+    OFFER_NAME: null,                        // ← Ostao null (disabled field)
+    DEFAULTCONTACTEMAIL: null,               // ← Ostao null (visible: false)
+    PQUANTITY_NUM: null,                     // ← Ostao null (visible: false)
+    CCC_IND: null                            // ← Ostao null (visible: false)
+  }
+}
+```
+
+**NAPOMENA:** Kada bi `db.mod='new'` ili `db.mod='edit'` (normalan rad), sva polja bi bila popunjena sa SQL rezultatima umjesto null vrijednosti!
+
+---
+
+#### KORAK 5.16: Child elementi se renderuju (Tarifni paketi, Zabrana info...)
+
+**BasicBlock template - Linija 10-11:**
+
+```html
+<z-contentloader
+  *ngFor="let children of items.children"
+  [items]="children"
+  [pname]="pname"
+  [model]="model[items.name]"    <!-- ← NESTED DIO! -->
+  [vparent]="valid"
+  [valid]="valid.children"
+  [output]="output.spec || output"
+  [parent]="model"
+  [parameters]="parameters">
+</z-contentloader>
+```
+
+**Za child "Tarifni paketi" (STVARNI podatak):**
+
+```typescript
+children = {
+  label: "Tarifni paketi",     // ← STVARNI podatak
+  name: "Tarifnipaketi",
+  code: "178",
+  template: "default_block",
+  elements: [ {...} ]
+}
+
+model = this.model[this.items.name]
+     = this.model["FlatBHTelecom"]
+     = db.model["FlatBHTelecom"]  // REFERENCA!
+```
+
+**Ali čekaj, zašto child dobija `model["FlatBHTelecom"]` a ne cijeli `db.model`?**
+
+**Odgovor:** Zato što BasicBlock prosleđuje `[model]="model[items.name]"` za children!
+
+**Ali to znači da će child "Tarifni paketi" kreirati:**
+
+```typescript
+// U DefaultBlock.ngOnInit() za "Tarifni paketi":
+if (!this.model[this.items.name]) this.model[this.items.name] = {};
+//     ↑ this.model = db.model["FlatBHTelecom"]
+//       this.items.name = "Tarifnipaketi"
+//
+// EKVIVALENT:
+//   db.model["FlatBHTelecom"]["Tarifnipaketi"] = {};
+```
+
+**Rezultat:**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: null,
+    NAME: null,
+    // ... ostali inputi ...
+    "Tarifnipaketi": null  // ← NESTED unutar "FlatBHTelecom"!
+  }
+}
+```
+
+**NAPOMENA iz STVARNOG console.log-a:** Children se ZAPRAVO kreiraju **na istom nivou** kao parent zbog načina kako BasicBlock template prosleđuje model u zakomentiranom kodu (linija 8-9 u basicblock.template.html).
+
+**Stvarni rezultat iz console.log-a:**
+
+```typescript
+// Iz other.md, vidimo da DefaultBlock za "Tarifnipaketi" prima model sa SVim vrijednostima:
+// model PRIJE kreiranja: {"FIRSTNAME":null,"NAME":null,...,"Preuzimanja":{},...,"Tarifnipaketi":null}
+
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: null,
+    NAME: null,
+    // ... ostali inputi (12 ukupno) ...
+    CCC_IND: null
+  },
+  "Preuzimanja": {},              // ← Root nivo (child)
+  "loadOffer164": null,           // ← Action za Preuzimanja
+  "OtkazivanjeISDNBRAzboginstalacijePOTSa": null,
+  "OtkazivanjeISDNPRAzboginstalacijePOTSa": null,
+  "Tarifnipaketi": {},            // ← Root nivo (child)
+  "loadOffer178": null,           // ← Action za Tarifnipaketi
+  // ... ostali children ...
+  "Zabranainformacija": {}        // ← Root nivo (child)
+}
+```
+
+---
+
+### FINALNI db.model - Potpuno popunjen
+
+**Sa db.mod='disabled' (STVARNO stanje iz console.log-a):**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: null,           // ← null jer db.mod='disabled'
+    NAME: null,
+    JOBTITLE: null,
+    PRIKLJUCAK_ADSL: null,
+    ACTION_PNK: null,
+    FRSEGSCLASS_CODE: null,
+    PUSER_EMAIL: null,
+    DEFAULTCONTACTPHONE: null,
+    OFFER_NAME: null,
+    DEFAULTCONTACTEMAIL: null,
+    PQUANTITY_NUM: null,
+    CCC_IND: null
+  },
+  "Preuzimanja": {},
+  "loadOffer164": null,
+  "OtkazivanjeISDNBRAzboginstalacijePOTSa": null,
+  "OtkazivanjeISDNPRAzboginstalacijePOTSa": null,
+  "Tarifnipaketi": {},
+  "loadOffer178": null,
+  "Dodatneuslugetehnicke(1)": {},
+  // ... ostali children ...
+  "Zabranainformacija": {}
+}
+```
+
+**Nakon što korisnik popuni polja (ručni unos):**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: "Kenan",                // ← Unio korisnik
+    NAME: "Testni korisnik",           // ← Unio korisnik
+    JOBTITLE: "Direktor",              // ← Odabrao korisnik
+    PRIKLJUCAK_ADSL: "0",              // ← Odabrao korisnik (IMA ADSL)
+    ACTION_PNK: null,                  // ← Ostao null (disabled)
+    FRSEGSCLASS_CODE: "GOLD",          // ← Unio korisnik
+    PUSER_EMAIL: null,                 // ← Ostao null (visible: false)
+    DEFAULTCONTACTPHONE: null,         // ← Ostao null (visible: false)
+    OFFER_NAME: null,                  // ← Ostao null (disabled)
+    DEFAULTCONTACTEMAIL: null,         // ← Ostao null (visible: false)
+    PQUANTITY_NUM: null,               // ← Ostao null (visible: false)
+    CCC_IND: null                      // ← Ostao null (visible: false)
+  },
+  "Preuzimanja": {},
+  "Tarifnipaketi": {},
+  "Zabranainformacija": {},
+  // ... ostali children ...
+}
+```
+
+**SA NORMALNIM MODOM (db.mod='new' ili 'edit') - sve vrijednosti bi bile iz baze:**
+
+```typescript
+db.model = {
+  auto: {},
+  "FlatpaketiPOTS": {},
+  "loadOffer979": "5919",
+  "FlatBHTelecom": {
+    FIRSTNAME: "Kenan",                      // ← Iz baze (SQL)
+    NAME: "Testni korisnik",                 // ← Iz baze (SQL)
+    JOBTITLE: "Direktor",                    // ← Iz baze (SQL)
+    PRIKLJUCAK_ADSL: "0",                    // ← Iz baze
+    ACTION_PNK: "N",                         // ← Iz baze (SQL)
+    FRSEGSCLASS_CODE: "GOLD",                // ← Iz baze (SQL)
+    PUSER_EMAIL: "kenan@bhtelecom.ba",       // ← Iz baze (SQL)
+    DEFAULTCONTACTPHONE: "+387611234567",    // ← Iz baze (SQL)
+    OFFER_NAME: "Flat BH Telecom",           // ← Iz baze (SQL)
+    DEFAULTCONTACTEMAIL: "kenan@test.com",   // ← Iz baze (SQL)
+    PQUANTITY_NUM: "1",                      // ← Iz baze (SQL)
+    CCC_IND: "N"                             // ← Iz baze (SQL)
+  },
+  "Preuzimanja": {},
+  "Tarifnipaketi": {},
+  "Zabranainformacija": {},
+  // ... ostali children ...
+}
+```
+
+---
+
+### VIZUALNI DIJAGRAM - Kompletan proces od `<z-pageloader>` do popunjavanja `db.model`
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  STARTNA POZICIJA                                               │
+│  ════════════════                                               │
+│                                                                 │
+│  <z-pageloader [items]="structure.structure"                    │
+│                 [model]="db.model">                             │
+│                                                                 │
+│  db.model = { auto: {} }                                        │
+│  db.mod = 'disabled'  ← KLJUČNO! Zato su sve vrijednosti null  │
+│  structure.structure = [{                                       │
+│    label: "Flat paketi POTS", name: "FlatpaketiPOTS",          │
+│    template: "default_block",                                   │
+│    elements: [{                                                 │
+│      label: "Flat BH Telecom",                                  │
+│      name: "FlatBHTelecom",                                     │
+│      template: "basic_block",                                   │
+│      inputs: [{ name: "FIRSTNAME", ... }, ...] // 14 inputa     │
+│    }]                                                           │
+│  }]                                                             │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.1: PageLoader renderuje template                      │
+│  ══════════════════════════════════════                         │
+│                                                                 │
+│  Template: <z-contentloader *ngFor="let item of items"          │
+│                             [items]="item"                      │
+│                             [model]="model">  ← REFERENCA!      │
+│                                                                 │
+│  Za items[0] ("Flat paketi POTS"), kreira ContentLoader        │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.2: ContentLoader.ngOnInit() - "Flat paketi POTS"      │
+│  ═══════════════════════════════════════════════════            │
+│                                                                 │
+│  items.template = "default_block"                               │
+│  model = db.model  ← REFERENCA!                                 │
+│                                                                 │
+│  ValueManager.set() → Postavlja property na null (disabled mod) │
+│  db.setoutput() → Kreira output["FlatpaketiPOTS"]               │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.3: ContentLoader renderuje template                   │
+│  ═════════════════════════════════════════                      │
+│                                                                 │
+│  <z-dlcontent [template]="default_block"                        │
+│               [inputs]="{items, model, ...}">                   │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.4: DLContent dinamički kreira DefaultBlockComponent   │
+│  ═══════════════════════════════════════════════════════════    │
+│                                                                 │
+│  let component = Components[key["default_block"]];              │
+│  // Components[1] = DefaultBlockComponent                       │
+│                                                                 │
+│  this.cmpRef = this.target.createComponent(factory);            │
+│  Object.assign(this.cmpRef.instance, this.inputs);              │
+│  // Prosleđuje items, model (REFERENCA!), output, ...           │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.5: DefaultBlockComponent.ngOnInit()                   │
+│  ═════════════════════════════════════════════                  │
+│                                                                 │
+│  if (!this.model[this.items.name])                              │
+│    this.model[this.items.name] = {};                            │
+│                                                                 │
+│  // this.model = db.model (REFERENCA!)                          │
+│  // this.items.name = "FlatpaketiPOTS"                          │
+│  // PRIJE: db.model["FlatpaketiPOTS"] = null                    │
+│  // Uslov !null = true, dakle izvršava se                       │
+│  // EKVIVALENT: db.model["FlatpaketiPOTS"] = {}                 │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "FlatpaketiPOTS": {}  ← null zamjenjen sa {}!                │
+│  }                                                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.6: DefaultBlock renderuje template sa elements        │
+│  ════════════════════════════════════════════════════            │
+│                                                                 │
+│  <z-contentloader *ngFor="let element of items.elements"        │
+│                   [items]="element"                             │
+│                   [model]="model">  ← CIJELI MODEL!             │
+│                                                                 │
+│  Za element[0] ("Flat BH Telecom"), kreira ContentLoader       │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.7-5.8: ContentLoader → DLContent → BasicBlock         │
+│  ═══════════════════════════════════════════════════            │
+│                                                                 │
+│  Isti proces kao 5.2-5.4, ali za "basic_block" template         │
+│                                                                 │
+│  let component = Components[key["basic_block"]];                │
+│  // Components[0] = BasicBlockComponent                         │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.9: BasicBlockComponent.ngOnInit()                     │
+│  ═══════════════════════════════════════                        │
+│                                                                 │
+│  if (!this.model[this.items.name])                              │
+│    this.model[this.items.name] = {};                            │
+│                                                                 │
+│  // this.model = db.model (REFERENCA!)                          │
+│  // this.items.name = "FlatBHTelecom"                           │
+│  // PRIJE: db.model["FlatBHTelecom"] = null                     │
+│  // Uslov !null = true, dakle izvršava se                       │
+│  // EKVIVALENT: db.model["FlatBHTelecom"] = {}                  │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "FlatpaketiPOTS": {},                                        │
+│    "loadOffer979": "5919",  ← dodan od select elementa          │
+│    "FlatBHTelecom": {}  ← null zamjenjen sa {}!                 │
+│  }                                                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.10: BasicBlock renderuje template sa inputs           │
+│  ═════════════════════════════════════════════════              │
+│                                                                 │
+│  <z-contentloader *ngFor="let input of items.inputs"            │
+│                   [items]="input"                               │
+│                   [model]="model[items.name]"  ← NESTED DIO!    │
+│                   [parent]="model">            ← CIJELI MODEL!  │
+│                                                                 │
+│  Za input[0] (FIRSTNAME):                                       │
+│    model = db.model["Osnovnipaket-Fizicka"]  ← REFERENCA!       │
+│    parent = db.model  ← REFERENCA!                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.11: ContentLoader.ngOnInit() - "FIRSTNAME"            │
+│  ════════════════════════════════════════════                   │
+│                                                                 │
+│  items.template = "input"                                       │
+│  model = db.model["Osnovnipaket-Fizicka"]  ← REFERENCA!         │
+│                                                                 │
+│  ValueManager.set(items, model, ...) → RADI! (je input)         │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.12: ValueManager.set() - POPUNJAVANJE!                │
+│  ════════════════════════════════════════════                   │
+│                                                                 │
+│  field.name = "FIRSTNAME"                                       │
+│  model = db.model["FlatBHTelecom"]  ← REFERENCA!                │
+│  mod = "disabled"  ← KLJUČNO!                                   │
+│                                                                 │
+│  if (mod === 'disabled' || mod === 'preview') {                 │
+│    // NE IZVRŠAVA SQL! Umjesto toga:                            │
+│    model[field.name] = null;                                    │
+│    // model["FIRSTNAME"] = null                                 │
+│    return;                                                      │
+│  }                                                              │
+│                                                                 │
+│  // SQL se ne izvršava jer je mod='disabled'                    │
+│  // U normalnom modu (mod='new' ili 'edit'):                    │
+│  // HTTP POST /uomback/common/lookupStatement                   │
+│  //   sql: "select uomcommon.fgetFirstLastname(...)"            │
+│  //   parameters: { P_CLASS_CODE: "ANALOG", P_CA_ID: 123 }     │
+│  // Response: "Kenan" (ime iz baze)                             │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "FlatpaketiPOTS": {},                                        │
+│    "loadOffer979": "5919",                                      │
+│    "FlatBHTelecom": {                                           │
+│      FIRSTNAME: null  ← null zbog disabled moda!                │
+│    }                                                            │
+│  }                                                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.13: DLContent kreira InputComponent                   │
+│  ═════════════════════════════════════════                      │
+│                                                                 │
+│  let component = Components[key["input"]];                      │
+│  // Components[8] = InputComponent                              │
+│                                                                 │
+│  Object.assign(inputInstance, {                                 │
+│    items: { name: "FIRSTNAME", label: "Ime", ... },             │
+│    model: db.model["FlatBHTelecom"]  ← REFERENCA!               │
+│  });                                                            │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.14: InputComponent sa [(ngModel)] - TWO-WAY BINDING!  │
+│  ══════════════════════════════════════════════════════         │
+│                                                                 │
+│  <input [(ngModel)]="model[items.name]">                        │
+│         ↑                                                       │
+│         └─ model["FIRSTNAME"]                                   │
+│            = db.model["FlatBHTelecom"]["FIRSTNAME"]             │
+│                                                                 │
+│  Angular automatski:                                            │
+│    1. Model → View: Prikazuje "" (prazan input jer je null)    │
+│    2. View → Model: Kada korisnik mijenja, ažurira model        │
+│                                                                 │
+│  Korisnik upiše "Kenan":                                        │
+│    Angular: model["FIRSTNAME"] = "Kenan"                        │
+│    Pošto model = db.model["FlatBHTelecom"] (REF!)               │
+│    Automatski: db.model["FlatBHTelecom"]["FIRSTNAME"]           │
+│                = "Kenan"                                        │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "FlatpaketiPOTS": {},                                        │
+│    "loadOffer979": "5919",                                      │
+│    "FlatBHTelecom": {                                           │
+│      FIRSTNAME: "Kenan"  ← UNIO KORISNIK!                       │
+│    }                                                            │
+│  }                                                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.15: Proces se ponavlja za SVA polja                   │
+│  ═════════════════════════════════════════════                  │
+│                                                                 │
+│  Za SVAKI input (FIRSTNAME, NAME, JOBTITLE, ...):               │
+│    1. ContentLoader.ngOnInit() → ValueManager.set()             │
+│    2. DLContent → InputComponent                                │
+│    3. InputComponent sa [(ngModel)]                             │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "FlatpaketiPOTS": {},                                        │
+│    "loadOffer979": "5919",                                      │
+│    "FlatBHTelecom": {                                           │
+│      FIRSTNAME: null,        // ← null zbog disabled moda       │
+│      NAME: null,                                                │
+│      JOBTITLE: null,                                            │
+│      PRIKLJUCAK_ADSL: null,                                     │
+│      ACTION_PNK: null,                                          │
+│      FRSEGSCLASS_CODE: null,                                    │
+│      PUSER_EMAIL: null,                                         │
+│      DEFAULTCONTACTPHONE: null,                                 │
+│      OFFER_NAME: null,                                          │
+│      DEFAULTCONTACTEMAIL: null,                                 │
+│      PQUANTITY_NUM: null,                                       │
+│      CCC_IND: null                                              │
+│    }                                                            │
+│  }                                                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  KORAK 5.16: Child elementi se renderuju                       │
+│  ════════════════════════════════════════                       │
+│                                                                 │
+│  BasicBlock: <z-contentloader *ngFor="let children of           │
+│                                        items.children">          │
+│                                                                 │
+│  Za children (Tarifni paketi, Zabrana info, ...):               │
+│    Proces se ponavlja (KORAK 5.1-5.15)                          │
+│                                                                 │
+│  db.model = {                                                   │
+│    auto: {},                                                    │
+│    "FlatpaketiPOTS": {},                                        │
+│    "loadOffer979": "5919",                                      │
+│    "FlatBHTelecom": { ... },  // 12 fields sa null vrijednošću  │
+│    "Preuzimanja": {},                                           │
+│    "loadOffer164": null,                                        │
+│    "Tarifnipaketi": {},                                         │
+│    "loadOffer178": null,                                        │
+│    "Zabranainformacija": {},                                    │
+│    // ... ostali children ...                                   │
+│  }                                                              │
+└─────────────────────────────────────────────────────────────────┘
+                         │
+                         ↓
+                ┌────────────────────┐
+                │  db.model POPUNJEN! │
+                └────────────────────┘
+```
+
+---
+
+### KLJUČNI KONCEPTI - Rezime
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. REFERENCA, ne kopija!                                       │
+│     ══════════════════════                                      │
+│                                                                 │
+│     Kada komponenta prima [model]="db.model", ona prima         │
+│     POKAZIVAČ na isti objekat, ne kopiju.                       │
+│                                                                 │
+│     let original = { auto: {} };                                │
+│     let referenca = original;  // REFERENCA!                    │
+│     referenca["Osnovneusluge"] = {};                            │
+│     console.log(original);                                      │
+│     // { auto: {}, Osnovneusluge: {} }  ← Original se mijenja!  │
+│                                                                 │
+│     Sve promjene se automatski reflektuju u originalnom         │
+│     db.model objektu!                                           │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  2. DefaultBlock vs BasicBlock                                  │
+│     ═══════════════════════════                                 │
+│                                                                 │
+│     DefaultBlock prosleđuje djeci:                              │
+│       [model]="model"  ← Cijeli model                           │
+│                                                                 │
+│     BasicBlock prosleđuje djeci:                                │
+│       [model]="model[items.name]"  ← Nested dio                 │
+│                                                                 │
+│     Zato DefaultBlock i BasicBlock kreiraju nested objekte      │
+│     na root nivou db.model, ali BasicBlock prosleđuje djeci     │
+│     samo nested dio!                                            │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  3. Kreiranje nested objekata                                   │
+│     ═══════════════════════════                                 │
+│                                                                 │
+│     DefaultBlock i BasicBlock u ngOnInit() kreiraju:            │
+│                                                                 │
+│     if (!this.model[this.items.name])                           │
+│       this.model[this.items.name] = {};                         │
+│                                                                 │
+│     Ovo DIREKTNO modifikuje db.model zbog reference pattern-a! │
+│                                                                 │
+│     DefaultBlock: db.model["FlatpaketiPOTS"] = {}               │
+│     BasicBlock: db.model["FlatBHTelecom"] = {}                  │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  4. DLContent - Dynamic Component Loader                        │
+│     ════════════════════════════════════                        │
+│                                                                 │
+│     DLContent koristi key objekat da mapira template name →     │
+│     Components array index:                                     │
+│                                                                 │
+│       const key = {                                             │
+│         basic_block: 0,    // → BasicBlockComponent             │
+│         default_block: 1,  // → DefaultBlockComponent           │
+│         input: 8,          // → InputComponent                  │
+│         select: 11,        // → SelectComponent                 │
+│         ...                                                     │
+│       };                                                        │
+│                                                                 │
+│     updateComponent() {                                         │
+│       let component = Components[key[this.template]];           │
+│       let factory = this.cfResolver                             │
+│                     .resolveComponentFactory(component);        │
+│       this.cmpRef = this.target.createComponent(factory);       │
+│       Object.assign(this.cmpRef.instance, this.inputs);         │
+│     }                                                           │
+│                                                                 │
+│     Dinamički kreira komponente na osnovu template property-ja! │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  5. ValueManager.set() - Inicijalizacija vrijednosti           │
+│     ═════════════════════════════════════════════               │
+│                                                                 │
+│     ValueManager.set() radi SAMO za input komponente           │
+│     (input, select, checkbox, textarea, date, ...)             │
+│                                                                 │
+│     NE radi za block komponente (default_block, basic_block)    │
+│                                                                 │
+│     Puni inicijalne vrijednosti iz:                             │
+│       1. generationFormula (SQL via backend)                    │
+│       2. defaultValue (statička vrijednost)                     │
+│       3. mappingRef (iz parametara)                             │
+│       4. fallback (prazan string ili false)                     │
+│                                                                 │
+│     Primjer:                                                    │
+│       // Ako je db.mod='disabled' ili 'preview':                │
+│       if (mod === 'disabled' || mod === 'preview') {            │
+│         model[field.name] = null;  // NE izvršava SQL!          │
+│         return;                                                 │
+│       }                                                         │
+│                                                                 │
+│       // Ako je db.mod='new' ili 'edit' (normalan rad):         │
+│       field.generationFormula =                                 │
+│         "select uomcommon.fgetFirstLastname(...)"               │
+│                                                                 │
+│       this.dblookup(generationFormula, parameters)              │
+│         .subscribe(result => {                                  │
+│           model[field.name] = result;  // "Kenan" iz baze       │
+│         });                                                     │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  6. Angular [(ngModel)] - Two-Way Binding                       │
+│     ══════════════════════════════════════                      │
+│                                                                 │
+│     [(ngModel)] je skraćenica za:                               │
+│       [ngModel]="..." - property binding (Model → View)         │
+│       (ngModelChange)="... = $event" - event (View → Model)     │
+│                                                                 │
+│     Angular automatski sinhronizuje:                            │
+│       - Model → View: Prikazuje vrijednost u input polju        │
+│       - View → Model: Ažurira model kada korisnik mijenja       │
+│                                                                 │
+│     Primjer:                                                    │
+│       <input [(ngModel)]="model[items.name]">                   │
+│                                                                 │
+│       // Inicijalno: model["FIRSTNAME"] = null                  │
+│       // Prikazuje prazan input                                 │
+│                                                                 │
+│       // Korisnik upisuje "Kenan"                               │
+│       // Angular automatski:                                    │
+│       model["FIRSTNAME"] = "Kenan"                              │
+│       // Pošto model = db.model["FlatBHTelecom"] (REF!)         │
+│       db.model["FlatBHTelecom"]["FIRSTNAME"] = "Kenan"          │
+│                                                                 │
+│     NEMA POTREBE ZA DODATNIM KODOM!                             │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  7. Redoslijed izvršavanja                                      │
+│     ═══════════════════════                                     │
+│                                                                 │
+│     PageLoader →                                                │
+│       ContentLoader.ngOnInit() →                                │
+│         ContentLoader.template →                                │
+│           DLContent.updateComponent() →                         │
+│             Komponenta.ngOnInit() (DefaultBlock/BasicBlock) →   │
+│               Komponenta.template →                             │
+│                 ... (rekurzivno za djecu)                       │
+│                                                                 │
+│     Za SVE komponente:                                          │
+│       1. Angular kreira instancu                                │
+│       2. Angular postavlja @Input() properties                  │
+│       3. Angular poziva ngOnInit()                              │
+│       4. Angular renderuje template                             │
+│       5. Template može kreirati nove komponente (ngFor, itd.)   │
+│       6. Proces se ponavlja rekurzivno                          │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  8. Zašto se koristi ovaj složen sistem?                       │
+│     ═══════════════════════════════════════                     │
+│                                                                 │
+│     - DINAMIČKA FORMA: Struktura forme dolazi sa backenda,     │
+│       nije hardkodovana u template-u                            │
+│                                                                 │
+│     - REUSABLE KOMPONENTE: Ista komponenta (InputComponent)    │
+│       se koristi za SVA input polja                             │
+│                                                                 │
+│     - ČIST KOD: Nema copy-paste koda za svako polje             │
+│                                                                 │
+│     - AUTOMATSKA SINHRONIZACIJA: Angular [(ngModel)] automatski │
+│       ažurira db.model kada korisnik mijenja vrijednosti        │
+│                                                                 │
+│     - CENTRALIZOVANA LOGIKA: ValueManager.set() na jednom       │
+│       mjestu upravlja inicijalizacijom svih polja               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Vizualni dijagram - Kompletan flow
 
 ```
