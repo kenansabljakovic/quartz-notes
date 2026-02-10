@@ -4556,6 +4556,2120 @@ structure.structure = [
 
 ---
 
+## 🔥 ANGULAR DATA BINDING - Objašnjenje za početnike
+
+**PRIJE nego što nastavimo sa detaljnim koracima, MORA se razumjeti šta znače uglaste zagrade `[ ]` u template-u!**
+
+### TRIK ZA PAMĆENJE: Zagrade kao strelice
+
+Zagrade ti govore **SMJER** podataka. Zamisli ih kao **strelice**:
+
+```
+[property]="value"     →  UGLASTE ZAGRADE = ULAZ (podatak IDE U komponentu)
+(event)="handler()"    →  OKRUGLE ZAGRADE = IZLAZ (podatak IZLAZI iz komponente)
+[(ngModel)]="value"    →  OBA = ULAZ + IZLAZ (dvosmjerno)
+```
+
+### Analogija: KUTIJA ZA POŠTU
+
+Zamisli da je svaka komponenta **kuća**, a data binding je **poštanski sistem**:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│   [property]="value"         KUTIJA ZA PRIMANJE POŠTE       │
+│   ┌─────┐                                                   │
+│   │ [ ] │ ← Uglaste zagrade = kutija na ulaznim vratima     │
+│   └─────┘   Pošta ULAZI u kuću                              │
+│             Parent ŠALJE podatke child-u                     │
+│                                                              │
+│                                                              │
+│   (event)="handler()"        ZVONO NA VRATIMA               │
+│   ┌─────┐                                                   │
+│   │ ( ) │ ← Okrugle zagrade = zvono koje zvoni              │
+│   └─────┘   Kuća OBAVJEŠTAVA nekoga napolju                 │
+│             Child ŠALJE podatke parent-u                     │
+│                                                              │
+│                                                              │
+│   [(ngModel)]="value"        INTERFON (dvosmjerni)          │
+│   ┌──────┐                                                  │
+│   │ [()] │ ← Oba = interfon (govoriš i slušaš)             │
+│   └──────┘   Podatak IDE u oba smjera                       │
+│             Parent ↔ Child (oba smjera)                      │
+│                                                              │
+│                                                              │
+│   property="value"           NALJEPNICA NA KUĆI              │
+│   ┌─────┐                                                   │
+│   │     │ ← Bez zagrada = naljepnica (statički tekst)       │
+│   └─────┘   Nikad se ne mijenja                             │
+│             Uvijek isti string                               │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 1. `[property]="value"` - UGLASTE ZAGRADE = ULAZ
+
+**Trik za pamćenje:** Uglaste zagrade `[ ]` izgledaju kao **kutija** - podatak ULAZI u kutiju (u komponentu)
+
+**Smjer:** Parent → Child
+
+```
+┌─────────────────┐           ┌─────────────────┐
+│                 │   [model]  │                 │
+│  PARENT         │ ────────→ │  CHILD           │
+│  (Evidencija)   │  db.model  │  (PageLoader)    │
+│                 │           │                 │
+│  db.model = {}  │           │  @Input() model  │
+│                 │           │  // prima {}      │
+└─────────────────┘           └─────────────────┘
+```
+
+**Analogija:** Ti (parent) **daješ poklon** (podatak) djetetu (child). Dijete prima poklon kroz `@Input()`.
+
+```typescript
+// PARENT komponenta (daje podatak):
+export class EvidencijaComponent {
+  db = { model: { auto: {} } };
+}
+```
+
+```html
+<!-- PARENT template (šalje podatak): -->
+<z-pageloader [model]="db.model"></z-pageloader>
+<!--            └──┬──┘ └──┬───┘
+                   │       └─ Šta šaljem? (db.model objekat)
+                   └───────── Kome šaljem? (u "model" input child-a) -->
+```
+
+```typescript
+// CHILD komponenta (prima podatak):
+export class PageLoaderComponent {
+  @Input() model: object;  // ← PRIMA podatak od parent-a
+  //  ↑
+  //  @Input() dekorator kaže: "Ovo polje PRIMA podatke izvana"
+}
+```
+
+---
+
+### 2. `(event)="handler()"` - OKRUGLE ZAGRADE = IZLAZ
+
+**Trik za pamćenje:** Okrugle zagrade `( )` izgledaju kao **usta** - komponenta GOVORI (šalje poruku napolje)
+
+**Smjer:** Child → Parent
+
+```
+┌─────────────────┐            ┌─────────────────┐
+│                 │  (clicked)  │                 │
+│  PARENT         │ ←───────── │  CHILD           │
+│  (Evidencija)   │  "kliknuo" │  (Button)        │
+│                 │            │                 │
+│  onClicked()    │            │  @Output() click │
+│                 │            │  // šalje event   │
+└─────────────────┘            └─────────────────┘
+```
+
+**Analogija:** Dijete (child) **viče** (emituje event) da kaže nešto roditelju (parent). Roditelj sluša.
+
+```typescript
+// CHILD komponenta (šalje podatak):
+export class ButtonComponent {
+  @Output() clicked = new EventEmitter<string>();
+  //  ↑
+  //  @Output() dekorator kaže: "Ovo polje ŠALJE podatke napolje"
+
+  onClick() {
+    this.clicked.emit("Korisnik je kliknuo!");  // ŠALJE poruku parent-u
+  }
+}
+```
+
+```html
+<!-- PARENT template (sluša event): -->
+<my-button (clicked)="onClicked($event)"></my-button>
+<!--         └──┬──┘  └──────┬────────┘
+                │             └─ Šta radim kad primim? (pozovi onClicked metodu)
+                └─────────────── Koji event slušam? ("clicked" event od child-a) -->
+```
+
+```typescript
+// PARENT komponenta (prima podatak):
+export class EvidencijaComponent {
+  onClicked(message: string) {
+    console.log(message);  // "Korisnik je kliknuo!"
+  }
+}
+```
+
+---
+
+### 3. `[(ngModel)]="value"` - OBA = ULAZ + IZLAZ
+
+**Trik za pamćenje:** `[( )]` izgleda kao **banana u kutiji** 🍌📦 - Angular zajednica to zove **"banana in a box"**
+
+**Smjer:** Parent ↔ Child (oba smjera)
+
+```
+┌─────────────────┐            ┌─────────────────┐
+│                 │ [(ngModel)] │                 │
+│  PARENT         │ ←────────→ │  INPUT FIELD     │
+│  (Evidencija)   │  db.model   │  <input>         │
+│                 │ ["FIRSTNAME"]│                 │
+│  db.model =     │            │  Korisnik upiše  │
+│  {FIRSTNAME:""}  │            │  "Kenan"         │
+└─────────────────┘            └─────────────────┘
+```
+
+**Analogija:** **Interfon** - ti govoriš I slušaš istovremeno. Kad se promijeni na jednoj strani, automatski se promijeni na drugoj.
+
+```html
+<input [(ngModel)]="model[items.name]">
+```
+
+**Ovo je SKRAĆENICA za:**
+
+```html
+<input
+  [ngModel]="model[items.name]"
+  (ngModelChange)="model[items.name] = $event">
+<!--  └──────┬──────┘                └──────┬──────┘
+       ULAZ (prikaži vrijednost)       IZLAZ (ažuriraj kad korisnik promijeni) -->
+```
+
+---
+
+### 4. `property="value"` - BEZ ZAGRADA = STATIČKI STRING
+
+**Trik za pamćenje:** Nema zagrada = **naljepnica** - jednom zalijepiš i nikad se ne mijenja
+
+```html
+<!-- Ovo je UVIJEK string "hello", nikad se ne mijenja: -->
+<child name="hello"></child>
+
+<!-- Ovo EVALUIRA TypeScript izraz: -->
+<child [name]="user.name"></child>
+```
+
+---
+
+### VIZUALNI TRIK ZA PAMĆENJE
+
+```
+┌────────────────────────────────────────────────────┐
+│                                                    │
+│     [  ]    =  ULAZ     =  @Input()    = Parent→Child  │
+│     (  )    =  IZLAZ    =  @Output()   = Child→Parent  │
+│     [( )]   =  OBA      =  Input+Output = ↔ Oba smjera │
+│     ništa   =  STATIČKO =  Obični string = Nema smjera │
+│                                                    │
+│  ZAGRADE = STRELICE SMJERA PODATAKA!               │
+│                                                    │
+│     [ → ]   Podatak IDE U komponentu               │
+│     ( ← )   Podatak IZLAZI iz komponente           │
+│     [( ↔ )] Podatak IDE u oba smjera               │
+│                                                    │
+└────────────────────────────────────────────────────┘
+```
+
+---
+
+### RAZLIKA: SA i BEZ uglatih zagrada
+
+**SA uglatim zagradama `[model]="db.model"` (Property Binding):**
+```html
+<z-pageloader [model]="db.model"></z-pageloader>
+```
+- Angular **evaluira** `db.model` kao TypeScript expression
+- Prosleđuje **objekat** `{ auto: {} }`
+- Child komponenta prima **objekat**, ne string
+
+**BEZ uglatih zagrada `model="db.model"` (String Literal):**
+```html
+<z-pageloader model="db.model"></z-pageloader>
+```
+- Angular **NE evaluira** ništa
+- Prosleđuje **string** `"db.model"` (doslovce tekst)
+- Child komponenta prima **string** `"db.model"`, ne objekat
+
+**Primjeri:**
+
+```html
+<!-- SA uglatim zagradama (Property Binding): -->
+<child [value]="db.model"></child>
+<!-- Child prima: { auto: {} } (OBJEKAT) -->
+
+<!-- BEZ uglatih zagrada (String Literal): -->
+<child value="db.model"></child>
+<!-- Child prima: "db.model" (STRING) -->
+
+<!-- Broj: -->
+<child [value]="42"></child>
+<!-- Child prima: 42 (BROJ) -->
+
+<!-- Boolean: -->
+<child [value]="true"></child>
+<!-- Child prima: true (BOOLEAN) -->
+
+<!-- Array: -->
+<child [value]="[1, 2, 3]"></child>
+<!-- Child prima: [1, 2, 3] (ARRAY) -->
+```
+
+---
+
+### ANALIZA NAŠEG `<z-pageloader>` TEMPLATE-A
+
+Hajde da analiziramo svaki binding u našem template-u:
+
+```html
+<z-pageloader
+  [ngClass]="{inactive:!db.mod||db.mod=='disabled'}"
+  *ngIf="structure"
+  [model]="db.model"
+  [items]="structure.structure"
+  [output]="db.output"
+  [vparent]="db.valid"
+  [valid]="db.valid.children"
+  [parameters]="db.params">
+</z-pageloader>
+```
+
+| Binding | Što se evaluira | Vrijednost koja se prosleđuje | Tip |
+|---------|----------------|-------------------------------|-----|
+| `[ngClass]="{...}"` | Objekat sa class mapom | `{ inactive: true/false }` | Object |
+| `*ngIf="structure"` | `this.structure` | `true/false` | Boolean |
+| `[model]="db.model"` | `this.db.model` | `{ auto: {} }` | Object |
+| `[items]="structure.structure"` | `this.structure.structure` | `[{...}]` (array) | Array |
+| `[output]="db.output"` | `this.db.output` | `{}` | Object |
+| `[vparent]="db.valid"` | `this.db.valid` | `{ valid: true, ... }` | Object |
+| `[valid]="db.valid.children"` | `this.db.valid.children` | `{}` | Object |
+| `[parameters]="db.params"` | `this.db.params` | `{ P_OFFER_ID: "5919", ... }` | Object |
+
+**Svi koriste `[ ]` = svi idu u jednom smjeru: Parent (Evidencija) → Child (PageLoader)**
+
+---
+
+### PARENT ↔ CHILD KOMUNIKACIJA
+
+#### Šta je Parent, a šta Child?
+
+**JEDNOSTAVNO PRAVILO:** Pogledaj **template (HTML)**. Komponenta čiji template **sadrži tag** druge komponente je **PARENT**.
+
+```html
+<!-- Ovo je template od Evidencija-usluge komponente: -->
+<z-pageloader [model]="db.model"></z-pageloader>
+<!-- ↑ z-pageloader je CHILD jer se nalazi u TUĐEM template-u -->
+<!-- ↑ Evidencija-usluge je PARENT jer NJEN template sadrži z-pageloader -->
+```
+
+**Porodično stablo našeg koda:**
+
+```
+Evidencija-usluge (PARENT)
+    │
+    └── z-pageloader (CHILD od Evidencije, ali PARENT za ContentLoader)
+            │
+            └── z-contentloader (CHILD od PageLoader-a)
+                    │
+                    └── z-dlcontent (CHILD od ContentLoader-a)
+                            │
+                            └── DefaultBlock (CHILD od DLContent-a)
+                                    │
+                                    └── BasicBlock
+                                            │
+                                            └── InputComponent
+```
+
+#### Kako znati smjer podataka?
+
+**TRIK: Pogledaj zagrade u template-u!**
+
+```html
+<z-pageloader
+  [model]="db.model"           <!-- [ ] = Parent ŠALJE db.model CHILD-u -->
+  [items]="structure.structure" <!-- [ ] = Parent ŠALJE structure CHILD-u -->
+  (onComplete)="handleDone()"  <!-- ( ) = Child ŠALJE event PARENT-u -->
+>
+</z-pageloader>
+```
+
+**Vizualno:**
+
+```
+PARENT (Evidencija)                    CHILD (PageLoader)
+┌──────────────────┐                   ┌──────────────────┐
+│                  │                   │                  │
+│  db.model ───────│──[model]────────→ │ @Input() model   │
+│                  │                   │                  │
+│  structure ──────│──[items]────────→ │ @Input() items   │
+│  .structure      │                   │                  │
+│                  │                   │                  │
+│  db.output ──────│──[output]───────→ │ @Input() output  │
+│                  │                   │                  │
+│  db.params ──────│──[parameters]───→ │ @Input() params  │
+│                  │                   │                  │
+└──────────────────┘                   └──────────────────┘
+
+Sve strelice idu → (u jednom smjeru: Parent → Child)
+Jer sve koriste [ ] (uglaste zagrade = ULAZ u child)
+```
+
+---
+
+### REFERENCE vs KOPIJE - KRITIČNO ZA RAZUMIJEVANJE!
+
+**Analogija: Google Docs vs Email**
+
+**REFERENCA (Objekat/Array):**
+Zamisli da šalješ kolegi **link na Google Docs**. Obojica gledate **ISTI dokument**. Kada kolega promijeni tekst, ti **automatski vidiš promjenu**.
+
+```typescript
+let parent = { auto: {} };
+let child = parent;  // REFERENCA (isti objekat!)
+
+child["FIRSTNAME"] = "Kenan";
+console.log(parent);  // { auto: {}, FIRSTNAME: "Kenan" }
+// ↑ Parent VIDI promjenu jer je ISTI objekat!
+```
+
+**KOPIJA (String/Number/Boolean):**
+Zamisli da šalješ kolegi tekst **emailom**. Svako ima **svoju kopiju**. Kada kolega promijeni tekst, ti **NE vidiš promjenu**.
+
+```typescript
+let parent = "Kenan";
+let child = parent;  // KOPIJA (novi string!)
+
+child = "John";
+console.log(parent);  // "Kenan"
+// ↑ Parent NE VIDI promjenu jer je KOPIJA!
+```
+
+**U našem kodu:**
+
+```html
+<z-pageloader [model]="db.model"></z-pageloader>
+```
+
+`db.model` je **objekat** → prosleđuje se **REFERENCA** (Google Docs link)
+
+Zato kada DefaultBlock radi:
+```typescript
+this.model["FlatpaketiPOTS"] = {};
+```
+To **automatski mijenja** `db.model` u parent komponenti jer je **ISTI objekat**!
+
+```
+db.model = { auto: {} }                    // PARENT vidi ovo
+           ↕ (ISTI objekat u memoriji!)
+this.model = { auto: {} }                  // CHILD vidi ovo
+
+// Child dodaje property:
+this.model["FlatpaketiPOTS"] = {};
+
+// Sada OBA vide:
+db.model = { auto: {}, FlatpaketiPOTS: {} }  // PARENT
+this.model = { auto: {}, FlatpaketiPOTS: {} } // CHILD
+// ↑ ISTI objekat! Promjena u child-u se automatski vidi u parent-u!
+```
+
+---
+
+### 📋 REZIME TRIKOVA ZA PAMĆENJE
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│  TRIK 1: ZAGRADE = SMJER                                   │
+│                                                            │
+│    [ ] = ULAZ u child    (kutija za primanje pošte)        │
+│    ( ) = IZLAZ iz child-a (zvono na vratima)               │
+│    [()]= OBA smjera       (interfon / "banana in a box")   │
+│                                                            │
+│  TRIK 2: KO JE PARENT?                                     │
+│                                                            │
+│    Pogledaj TEMPLATE. Ako komponenta A                      │
+│    u svom template-u SADRŽI tag <komponenta-b>,             │
+│    onda je A = PARENT, B = CHILD                            │
+│                                                            │
+│  TRIK 3: SMJER PODATAKA                                    │
+│                                                            │
+│    @Input()  = Child PRIMA od parent-a    [ ]              │
+│    @Output() = Child ŠALJE parent-u       ( )              │
+│                                                            │
+│  TRIK 4: REFERENCA vs KOPIJA                                │
+│                                                            │
+│    Objekat/Array = REFERENCA (Google Docs link)             │
+│    String/Number/Boolean = KOPIJA (Email)                   │
+│                                                            │
+│    Ako prosleđuješ OBJEKAT, child i parent dijele          │
+│    ISTI objekat. Promjena u child-u se automatski           │
+│    vidi u parent-u!                                         │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Sada kada razumiješ šta znače uglaste zagrade `[ ]`, hajde da razumiješ još DVA ključna Angular mehanizma prije nego što nastaviš sa detaljnim koracima!** 🎯
+
+---
+
+## 🔄 ANGULAR MEHANIZMI - *ngFor i Dinamičko kreiranje komponenti
+
+> **VAŽNO:** Ova sekcija objašnjava DVA ključna mehanizma koja ćeš vidjeti u DETALJNIM KORACIMA:
+> 1. **Kako *ngFor kreira više child komponenti** (iteracija kroz array)
+> 2. **Kako sistem zna koju komponentu kreirati** na osnovu `items.template`
+>
+> Pročitaj pažljivo - bez ovog razumijevanja, detaljni koraci neće imati smisla! 💡
+
+---
+
+### DIO 1: *ngFor - Parent-Child komunikacija
+
+---
+
+#### 1.1 ANALOGIJA: AMAZON SKLADIŠTE
+
+Zamislite da radite u **Amazon skladištu** i upravo je stigao kamion sa paletom.
+
+```
+🚛 KAMION (Backend response)
+ └── 📦 PALETA (structure.structure = array)
+      └── 📦 VELIKA KUTIJA: "Flat paketi POTS"
+           ├── 📦 SREDNJA KUTIJA: "Flat BH Telecom"
+           │    ├── 📄 Mali paket: "Ime" (FIRSTNAME)
+           │    ├── 📄 Mali paket: "Prezime" (NAME)
+           │    ├── 📄 Mali paket: "Funkcija" (JOBTITLE)
+           │    ├── 📄 ... (još 11 malih paketa)
+           │    │
+           │    ├── 📦 Podkutija: "Tarifni paketi"
+           │    │    ├── 📄 Mali paket: "Tarifa"
+           │    │    └── 📄 ...
+           │    ├── 📦 Podkutija: "Preuzimanja"
+           │    └── 📦 ... (još 7 podkutija)
+           │
+           └── (moguće još srednje kutije)
+```
+
+**Svaka osoba u skladištu ima JEDNU zadaću:**
+- **Šefica smjene** (PageLoader) → otvara PALETU, vadi VELIKE kutije
+- **Radnik** (ContentLoader) → otvara JEDNU kutiju, gleda etiketu, prosljeđuje dalje
+- **Sorter** (DefaultBlock/BasicBlock) → sortira sadržaj kutije na: artikle, podkutije
+
+**KLJUČNO PRAVILO SKLADIŠTA:**
+> Niko ne otvara SVE kutije odjednom. Svaka osoba otvara JEDNU stvar, i za svaki artikal unutra poziva NOVOG radnika.
+
+To je upravo ono što radi `*ngFor` - za SVAKI element u kutiji, poziva NOVOG radnika!
+
+---
+
+#### 1.2 ŠTA JE *ngFor? - Jednostavno objašnjenje
+
+`*ngFor` je Angularova komanda koja kaže:
+
+> "Za SVAKI element u ovom array-u, napravi KOPIJU ovog HTML elementa"
+
+```
+Zamislite da imate JEDNU šablonu za koverte:
+
+┌─────────────────────┐
+│ Za: ____________     │
+│ Od: Amazon           │
+│ Sadržaj: ___________ │
+└─────────────────────┘
+
+I imate 3 artikla za poslati.
+
+*ngFor kaže: "Napravi 3 koverte, po jednu za svaki artikal"
+
+┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
+│ Za: FIRSTNAME        │  │ Za: NAME             │  │ Za: JOBTITLE         │
+│ Od: Amazon           │  │ Od: Amazon           │  │ Od: Amazon           │
+│ Sadržaj: "Ime"       │  │ Sadržaj: "Prezime"   │  │ Sadržaj: "Funkcija"  │
+└─────────────────────┘  └─────────────────────┘  └─────────────────────┘
+```
+
+**U kodu to izgleda ovako:**
+
+```html
+<!-- ŠABLON (piše se jednom): -->
+<z-contentloader *ngFor="let item of items" [items]="item">
+</z-contentloader>
+
+<!-- ANGULAR KREIRA (automatski, za svaki element): -->
+<z-contentloader [items]="items[0]"></z-contentloader>  <!-- 1. koverta -->
+<z-contentloader [items]="items[1]"></z-contentloader>  <!-- 2. koverta -->
+<z-contentloader [items]="items[2]"></z-contentloader>  <!-- 3. koverta -->
+```
+
+---
+
+#### 1.3 RAŠČLANJIVANJE SINTAKSE - Svaka riječ ima značenje
+
+```
+*ngFor="let item of items"
+│       │   │    │   │
+│       │   │    │   └── items = IZVOR PODATAKA (array kroz koji iteriramo)
+│       │   │    │        → Ovo je @Input() items koji je parent proslijedio
+│       │   │    │
+│       │   │    └────── of = "IZ" (ključna riječ, kao "iz kutije")
+│       │   │
+│       │   └─────────── item = LOKALNA VARIJABLA (jedan element iz array-a)
+│       │                 → Ovo IME biramo MI! Mogli smo napisati "banana"
+│       │                 → let banana of items → banana = items[0], items[1]...
+│       │
+│       └─────────────── let = "KREIRAJ VARIJABLU" (JavaScript keyword)
+│
+└─────────────────────── *ngFor = "ZA SVAKI" (Angular direktiva)
+```
+
+**Analogija za svaku riječ:**
+
+| Riječ | Analogija Amazon skladište | Primjer |
+|-------|---------------------------|---------|
+| `*ngFor` | "Za svaku stvar u kutiji..." | Naredba za radnika |
+| `let` | "Uzmi jednu stvar i nazovi je..." | Daj joj privremeno ime |
+| `item` | "...paket" (ili kako god hoćeš) | Ime koje daješ stvari u ruci |
+| `of` | "...iz..." | Pokazuješ odakle vadiš |
+| `items` | "...ove kutije" | Kutija iz koje vadiš |
+
+**Na ljudskom jeziku:**
+> "Za svaki **paket** iz **ove kutije**, napravi jednu kopiju ovog HTML elementa i daj joj taj **paket**"
+
+---
+
+#### 1.4 STVARNI PRIMJER - Praćenje podataka od početka do kraja
+
+##### FAZA 1: Backend šalje podatke (kamion stiže)
+
+```typescript
+// Backend response (= kamion sa paletom)
+response = {
+  structure: [                    // ← PALETA (array)
+    {                             // ← VELIKA KUTIJA #1
+      name: "FlatpaketiPOTS",
+      label: "Flat paketi POTS",
+      template: "default_block",
+      elements: [                 // ← SREDNJE KUTIJE unutar velike
+        {
+          name: "FlatBHTelecom",
+          label: "Flat BH Telecom",
+          template: "basic_block",
+          inputs: [               // ← MALI PAKETI
+            { name: "FIRSTNAME", label: "Ime", template: "input" },
+            { name: "NAME", label: "Prezime", template: "input" },
+            // ... još 11 inputa
+          ],
+          children: [             // ← PODKUTIJE
+            { name: "Tarifnipaketi", label: "Tarifni paketi", template: "basic_block" },
+            { name: "Preuzimanja", label: "Preuzimanja", template: "basic_block" },
+            // ... još 7 podkutija
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+```
+U skladištu:
+
+📦 PALETA (structure.structure) sadrži 1 veliku kutiju
+ │
+ └── 📦 VELIKA KUTIJA: etiketa kaže "default_block"
+      │   Naziv: "Flat paketi POTS"
+      │
+      └── Unutra se nalaze SREDNJE KUTIJE (elements array):
+           │
+           └── 📦 SREDNJA KUTIJA: etiketa kaže "basic_block"
+                │   Naziv: "Flat BH Telecom"
+                │
+                ├── 📄📄📄 MALI PAKETI (inputs array):
+                │   FIRSTNAME, NAME, JOBTITLE, PUSER_EMAIL...
+                │
+                └── 📦📦📦 PODKUTIJE (children array):
+                    Tarifni paketi, Preuzimanja, Zabrana info...
+```
+
+---
+
+##### FAZA 2: PageLoader - Šefica otvara paletu
+
+**Stvarni kod** (`pageloader.template.html`):
+```html
+<z-contentloader
+  *ngFor="let item of items"
+  [items]="item"
+  [model]="model"
+  [output]="output"
+  ...
+></z-contentloader>
+```
+
+**Šta se dešava, korak po korak:**
+
+```
+ŠEFICA (PageLoader) prima:
+   items = structure.structure = [ { name: "FlatpaketiPOTS", ... } ]
+                                   ↑
+                                   Ovo je ARRAY sa 1 elementom!
+
+
+KORAK 1: *ngFor gleda u "items" i pita: "Koliko elemenata ima?"
+         Odgovor: 1 element (index 0)
+
+KORAK 2: *ngFor kreće u PRVU iteraciju:
+         let item = items[0] = { name: "FlatpaketiPOTS", template: "default_block", ... }
+         │
+         └── "item" je LOKALNA VARIJABLA koja POKAZUJE na items[0]
+
+KORAK 3: Angular kreira JEDNU <z-contentloader> komponentu:
+         [items]="item" → ContentLoader prima: { name: "FlatpaketiPOTS", ... }
+         [model]="model" → ContentLoader prima: db.model (REFERENCA!)
+
+KORAK 4: Nema više elemenata → *ngFor završava
+```
+
+**Analogija:**
+```
+ŠEFICA otvara paletu:
+  "Vidim 1 veliku kutiju na paleti"
+  "Pozivam RADNIKA #1 i dajem mu tu kutiju"
+  "Nema više kutija, završila sam"
+```
+
+**REZULTAT u DOM-u:**
+```html
+<!-- Angular je kreirao JEDNU instancu: -->
+<z-contentloader [items]="{name:'FlatpaketiPOTS', template:'default_block', ...}">
+  ...
+</z-contentloader>
+```
+
+---
+
+##### FAZA 3: ContentLoader - Radnik otvara kutiju i čita etiketu
+
+**Stvarni kod** (`contentloader.template.html`):
+```html
+<span *ngIf="items.active">
+  <z-dlcontent
+    [template]="items.template"   ← ČITA ETIKETU!
+    [inputs]="{
+      items: items,
+      model: model,
+      ...
+    }">
+  </z-dlcontent>
+</span>
+```
+
+```
+RADNIK #1 (ContentLoader) prima kutiju i gleda ETIKETU:
+
+  ┌─────────────────────────────┐
+  │  📦 KUTIJA                   │
+  │                              │
+  │  Etiketa: "default_block"    │  ← items.template
+  │  Naziv: "Flat paketi POTS"  │  ← items.label
+  │                              │
+  │  Radnik ČITA etiketu i kaže: │
+  │  "Aha, ovo je DEFAULT BLOCK" │
+  │  "Moram pozvati SORTERA za   │
+  │   default blokove"           │
+  └─────────────────────────────┘
+
+  Radnik poziva SORTERA (DefaultBlockComponent)
+  i predaje mu CIJELU KUTIJU + MODEL + OUTPUT...
+```
+
+**ContentLoader NE otvara kutiju sam!** On samo:
+1. Čita etiketu (`items.template`)
+2. Na osnovu etikete bira KOJI SORTER da pozove (vidjećeš to u DIO 2!)
+3. Prosljeđuje SVE podatke tom sorteru
+
+---
+
+##### FAZA 4: DefaultBlock - Sorter otvara kutiju i sortira sadržaj
+
+**Ovo je KLJUČNA FAZA gdje počinje "child" dio!**
+
+**Stvarni kod** (`defaultblock.template.html`):
+```html
+<div class="z-default-block">
+  <header>
+    <h2>{{items.label}}</h2>  <!-- "Flat paketi POTS" -->
+  </header>
+
+  <body>
+    <!-- MESSAGES: -->
+    <z-contentloader
+      *ngFor="let message of items.messages"
+      [items]="message"
+      [model]="model" ...>
+    </z-contentloader>
+
+    <!-- ELEMENTS: ← SREDNJE KUTIJE! -->
+    <z-contentloader
+      *ngFor="let element of items.elements"
+      [items]="element"
+      [model]="model" ...>          <!-- ← CIJELI model! -->
+    </z-contentloader>
+
+    <!-- CHILDREN: ← PODKUTIJE! -->
+    <z-contentloader
+      *ngFor="let children of items.children"
+      [items]="children"
+      [model]="model" ...>          <!-- ← CIJELI model! -->
+    </z-contentloader>
+  </body>
+</div>
+```
+
+**Šta se dešava, korak po korak:**
+
+```
+SORTER (DefaultBlock) otvara kutiju "Flat paketi POTS":
+
+┌────────────────────────────────────────────────────────┐
+│  📦 OTVORENA KUTIJA: "Flat paketi POTS"                │
+│                                                         │
+│  Unutra nalazim:                                        │
+│                                                         │
+│  📬 messages array:  [prazno]                           │
+│     → *ngFor: "Nema poruka, preskačem"                  │
+│                                                         │
+│  📦 elements array:  [1 srednja kutija]                 │
+│     → *ngFor: "Imam 1 element, pozivam 1 radnika"      │
+│     → let element = { name: "FlatBHTelecom", ... }      │
+│     → [items]="element" → šaljem radniku                │
+│                                                         │
+│  📦 children array:  [prazno ili undefined]             │
+│     → *ngFor: "Nema children, preskačem"                │
+└────────────────────────────────────────────────────────┘
+```
+
+**Fokusirajmo se na `*ngFor="let element of items.elements"`:**
+
+```typescript
+// items.elements je ARRAY:
+items.elements = [
+  {                                    // index 0
+    name: "FlatBHTelecom",
+    label: "Flat BH Telecom",
+    template: "basic_block",           // ← ETIKETA za sljedeću kutiju!
+    inputs: [ ... 14 inputa ... ],     // ← MALI PAKETI unutra
+    children: [ ... 9 children ... ]   // ← PODKUTIJE unutra
+  }
+]
+
+// *ngFor iteracija:
+// Iteracija 1: let element = items.elements[0]
+//              element = { name: "FlatBHTelecom", template: "basic_block", ... }
+//
+// [items]="element" → novi ContentLoader prima OVAJ OBJEKAT kao svoj @Input() items
+```
+
+```
+SORTER vadi SREDNJU KUTIJU iz velike kutije:
+
+  📦 VELIKA KUTIJA: "Flat paketi POTS" (DefaultBlock)
+   │
+   │  *ngFor="let element of items.elements"
+   │  ┌─────────────────────────────────┐
+   │  │ Iteracija 1:                     │
+   │  │                                  │
+   │  │ let element = {                  │
+   │  │   name: "FlatBHTelecom",         │
+   │  │   template: "basic_block",       │
+   │  │   inputs: [14 paketa],           │
+   │  │   children: [9 podkutija]        │
+   │  │ }                                │
+   │  │                                  │
+   │  │ SORTER poziva NOVOG RADNIKA:     │
+   │  │ "Ej, Radniče #2! Evo ti kutija  │
+   │  │  sa etiketom 'basic_block'"      │
+   │  │                                  │
+   │  │ [items]="element" ← PREDAJE MU  │
+   │  └─────────────────────────────────┘
+   │
+   │  Nema više elemenata → *ngFor završava
+   │
+```
+
+---
+
+##### FAZA 5: ContentLoader #2 - Radnik čita novu etiketu
+
+```
+RADNIK #2 (novi ContentLoader) prima kutiju:
+
+  Prima: @Input() items = { name: "FlatBHTelecom", template: "basic_block", ... }
+
+  Čita etiketu: items.template = "basic_block"
+
+  Kaže: "Aha, ovo je BASIC BLOCK"
+        "Pozivam SORTERA za basic blokove!"
+
+  Poziva BasicBlockComponent i predaje mu sve
+```
+
+---
+
+##### FAZA 6: BasicBlock - Sorter otvara SREDNJU kutiju
+
+**OVDJE JE KLJUČ ZA "CHILD" DIO!**
+
+**Stvarni kod** (`basicblock.template.html`):
+```html
+<div class="z-basic-block" *ngIf="output.active">
+
+  <!-- ELEMENTS: -->
+  <z-contentloader
+    *ngFor="let element of items.elements"
+    [items]="element"
+    [model]="model[items.name]" ...>     <!-- ← NESTED DIO modela! -->
+  </z-contentloader>
+
+  <!-- INPUTS: ← MALI PAKETI! -->
+  <z-contentloader
+    *ngFor="let input of items.inputs"
+    [items]="input"
+    [model]="model[items.name]"          <!-- ← NESTED DIO modela! -->
+    [parent]="model" ...>                <!-- ← CIJELI model kao parent! -->
+  </z-contentloader>
+
+  <!-- CHILDREN: ← PODKUTIJE! -->
+  <z-contentloader
+    *ngFor="let children of items.children"
+    [items]="children"
+    [model]="model[items.name]"          <!-- ← NESTED DIO modela! -->
+    [parent]="model" ...>                <!-- ← CIJELI model kao parent! -->
+  </z-contentloader>
+
+</div>
+```
+
+**Šta se dešava sa inputs (mali paketi):**
+
+```typescript
+// BasicBlock ima:
+// this.items = { name: "FlatBHTelecom", inputs: [...], children: [...] }
+// this.model = db.model = { auto: {}, FlatpaketiPOTS: {}, FlatBHTelecom: {} }
+
+// *ngFor="let input of items.inputs"
+// items.inputs = [
+//   { name: "FIRSTNAME", label: "Ime", template: "input" },          // index 0
+//   { name: "NAME", label: "Prezime", template: "input" },           // index 1
+//   { name: "JOBTITLE", label: "Funkcija", template: "input" },      // index 2
+//   ... još 11 inputa
+// ]
+
+// ITERACIJA 1:
+let input = items.inputs[0]
+// input = { name: "FIRSTNAME", label: "Ime", template: "input" }
+// [items]="input"                → child prima OVAJ OBJEKAT
+// [model]="model[items.name]"    → child prima model["FlatBHTelecom"] = {}
+// [parent]="model"               → child prima CIJELI db.model
+
+// ITERACIJA 2:
+let input = items.inputs[1]
+// input = { name: "NAME", label: "Prezime", template: "input" }
+// [items]="input"                → child prima OVAJ OBJEKAT
+// [model]="model[items.name]"    → child prima model["FlatBHTelecom"] = {}
+// [parent]="model"               → child prima CIJELI db.model
+
+// ... i tako za svih 14 inputa
+```
+
+```
+SORTER (BasicBlock) otvara kutiju "Flat BH Telecom":
+
+┌──────────────────────────────────────────────────────────────┐
+│  📦 OTVORENA KUTIJA: "Flat BH Telecom"                       │
+│                                                               │
+│  KORAK 1: Sortira MALE PAKETE (inputs)                        │
+│  ─────────────────────────────────────                        │
+│                                                               │
+│  *ngFor="let input of items.inputs"                           │
+│                                                               │
+│  📄 Paket 1: FIRSTNAME                                        │
+│     → let input = { name:"FIRSTNAME", template:"input" }      │
+│     → [items]="input" → Radnik #3 prima ovaj paket            │
+│     → [model]="model['FlatBHTelecom']" → prima DIO modela     │
+│     → Radnik #3 renderuje: <input> polje za "Ime"             │
+│                                                               │
+│  📄 Paket 2: NAME                                             │
+│     → let input = { name:"NAME", template:"input" }           │
+│     → [items]="input" → Radnik #4 prima ovaj paket            │
+│     → [model]="model['FlatBHTelecom']" → prima ISTI DIO       │
+│     → Radnik #4 renderuje: <input> polje za "Prezime"         │
+│                                                               │
+│  📄 Paket 3: JOBTITLE                                         │
+│     → ... isti proces ...                                     │
+│                                                               │
+│  📄 ... (još 11 malih paketa, svaki dobije svog radnika)      │
+│                                                               │
+│                                                               │
+│  KORAK 2: Sortira PODKUTIJE (children)                        │
+│  ─────────────────────────────────────                        │
+│                                                               │
+│  *ngFor="let children of items.children"                      │
+│                                                               │
+│  📦 Podkutija 1: "Tarifni paketi"                             │
+│     → let children = { name:"Tarifnipaketi",                  │
+│                         template:"basic_block",                │
+│                         inputs: [...], children: [...] }       │
+│     → [items]="children" → Radnik #17 prima OVU KUTIJU        │
+│     → [model]="model['FlatBHTelecom']" → prima DIO modela     │
+│     → Radnik #17 otvara kutiju, čita etiketu "basic_block"    │
+│     → Poziva NOVOG SORTERA (BasicBlock)                        │
+│     → SORTER OTVARA I PONAVLJA SVE OD POČETKA! (REKURZIJA)   │
+│                                                               │
+│  📦 Podkutija 2: "Preuzimanja"                                │
+│     → ... isti proces ...                                     │
+│                                                               │
+│  📦 ... (još 7 podkutija)                                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### 1.5 CHILD DIO - SUPER DETALJNO OBJAŠNJENJE
+
+##### Šta je "child"?
+
+**U Angular svijetu**, "child" je komponenta koja je **kreirana unutar druge komponente**.
+
+**U ovom projektu**, "child" ima **DVA značenja:**
+
+| Pojam | Značenje | Primjer |
+|-------|----------|---------|
+| **Angular child** | Komponenta kreirana u template-u druge komponente | `<z-contentloader>` unutar `<z-default-block>` |
+| **items.children** | Property u JSON podacima sa backenda | `{ children: [{name:"Tarifnipaketi"}, ...] }` |
+
+**Nemoj ih miješati!** Angular child je SVAKA komponenta kreirana u template-u. `items.children` je samo JEDAN od array-ova (pored `items.elements` i `items.inputs`).
+
+---
+
+##### Analogija za CHILD: Porodično stablo
+
+```
+Zamislite PORODIČNO STABLO:
+
+👴 PRADEDA: "Flat paketi POTS" (DefaultBlock)
+ │
+ │  Pradeda ima JEDNO DIJETE u "elements":
+ │
+ ├── 👨 OTAC: "Flat BH Telecom" (BasicBlock)
+ │    │
+ │    │  Otac ima OSOBINE (inputs):
+ │    │  📋 Ime: FIRSTNAME
+ │    │  📋 Prezime: NAME
+ │    │  📋 Funkcija: JOBTITLE
+ │    │  📋 Email: PUSER_EMAIL
+ │    │  📋 ... (još 10 osobina)
+ │    │
+ │    │  Otac ima VLASTITU DJECU (children):
+ │    │
+ │    ├── 👦 SIN 1: "Tarifni paketi" (BasicBlock)
+ │    │    │  Sin ima SVOJE osobine (inputs)
+ │    │    │  Sin ima SVOJU djecu (children)
+ │    │    │  └── 👶 UNUK: ...
+ │    │    │
+ │    ├── 👦 SIN 2: "Preuzimanja" (BasicBlock)
+ │    │    │  Sin ima SVOJE osobine
+ │    │    │  Sin ima SVOJU djecu
+ │    │    │
+ │    ├── 👧 KĆERKA 3: "Zabrana info" (BasicBlock)
+ │    ├── 👦 SIN 4: "POTS servis" (BasicBlock)
+ │    ├── 👧 KĆERKA 5: ...
+ │    └── ... (ukupno 9 djece)
+ │
+ └── (moguća druga djeca u elements)
+```
+
+**Poenta porodične analogije:**
+- Svaka OSOBA (komponenta) ima **osobine** (inputs) i **djecu** (children)
+- Svako DIJETE je opet **osoba** koja može imati **svoju djecu**
+- To je **REKURZIJA** - isti obrazac se ponavlja na svakom nivou
+
+---
+
+##### Kako *ngFor kreira "djecu" - KORAK PO KORAK
+
+Pratimo jedan child od nastanka do renderovanja:
+
+**KORAK A: BasicBlock ima items.children**
+
+```typescript
+// BasicBlock ("Flat BH Telecom") ima u svom items objektu:
+this.items = {
+  name: "FlatBHTelecom",
+  template: "basic_block",
+  children: [
+    //  ↓ OVO JE ARRAY SA 9 ELEMENATA
+    { name: "Tarifnipaketi", label: "Tarifni paketi", template: "basic_block", inputs: [...], children: [...] },
+    { name: "Preuzimanja", label: "Preuzimanja", template: "basic_block", inputs: [...] },
+    { name: "Zabranainfo", label: "Zabrana info", template: "basic_block", inputs: [...] },
+    // ... još 6
+  ]
+}
+```
+
+**KORAK B: *ngFor čita array i kreće iterirati**
+
+```html
+<!-- BasicBlock template: -->
+<z-contentloader
+  *ngFor="let children of items.children"
+  [items]="children"
+  [model]="model[items.name]"
+  [parent]="model"
+  ...>
+</z-contentloader>
+```
+
+```
+*ngFor pita: "Koliko elemenata ima items.children?"
+Odgovor: 9
+
+*ngFor kaže: "OK, napraviću 9 kopija <z-contentloader>-a"
+```
+
+**KORAK C: PRVA ITERACIJA (Tarifni paketi)**
+
+```
+*ngFor ITERACIJA 1:
+═══════════════════
+
+let children = items.children[0]
+             = { name: "Tarifnipaketi", label: "Tarifni paketi", template: "basic_block", ... }
+  │
+  │  "children" je sad LOKALNA VARIJABLA koja pokazuje na ovaj objekat
+  │
+  │  Angular kreira NOVU <z-contentloader> instancu i prosljeđuje:
+  │
+  ├── [items]="children"
+  │   │
+  │   │  ŠTA CHILD PRIMA:
+  │   │  @Input() items = { name: "Tarifnipaketi",
+  │   │                      label: "Tarifni paketi",
+  │   │                      template: "basic_block",
+  │   │                      inputs: [...],
+  │   │                      children: [...] }
+  │   │
+  │   │  VAŽNO: Child prima KOMPLETNU DEFINICIJU sebe!
+  │   │  Ima svoju etiketu (template), svoje inpute, svoju djecu
+  │   │
+  │
+  ├── [model]="model[items.name]"
+  │   │
+  │   │  RAŠČLANJIVANJE:
+  │   │  model = db.model (cijeli model koji BasicBlock ima)
+  │   │  items.name = "FlatBHTelecom" (IME PARENT-a, NE childa!)
+  │   │  model[items.name] = model["FlatBHTelecom"] = { FIRSTNAME: null, NAME: null, ... }
+  │   │
+  │   │  ŠTA CHILD PRIMA:
+  │   │  @Input() model = db.model["FlatBHTelecom"]
+  │   │                 = { FIRSTNAME: null, NAME: null, JOBTITLE: null, ... }
+  │   │
+  │   │  ANALOGIJA: Otac daje sinu SVOJ URED (ne cijelu kuću!)
+  │   │  Sin može dodavati stvari u očev ured jer je to REFERENCA
+  │   │
+  │
+  └── [parent]="model"
+      │
+      │  ŠTA CHILD PRIMA:
+      │  @Input() parent = db.model (CIJELI model!)
+      │
+      │  ANALOGIJA: Sin dobija KLJUČ OD CIJELE KUĆE (parent)
+      │  ali radi primarno u OČEVOM UREDU (model)
+```
+
+**KORAK D: ŠTA RADI TAJ CHILD?**
+
+```
+NOVI ContentLoader (#17) prima:
+  items = { name: "Tarifnipaketi", template: "basic_block", ... }
+
+ContentLoader čita etiketu: items.template = "basic_block"
+ContentLoader kaže: "Pozivam BasicBlock sortera!"
+
+NOVI BasicBlock se kreira za "Tarifni paketi"
+  │
+  │  Ima SVOJE items.inputs → *ngFor kreira inpute za tarifne pakete
+  │  Ima SVOJE items.children → *ngFor kreira DJECU tarifnih paketa
+  │
+  │  I PROCES SE PONAVLJA! (REKURZIJA)
+  │
+  └── Ako "Tarifni paketi" ima children, oni će opet imati inpute i djecu...
+```
+
+```
+VIZUALNO - Rekurzija:
+
+📦 "Flat paketi POTS" (DefaultBlock)
+ │
+ ├── *ngFor elements → 📦 "Flat BH Telecom" (BasicBlock)
+ │                      │
+ │                      ├── *ngFor inputs → 📄 FIRSTNAME (Input)
+ │                      ├── *ngFor inputs → 📄 NAME (Input)
+ │                      ├── *ngFor inputs → 📄 JOBTITLE (Input)
+ │                      │   ... (14 inputa ukupno)
+ │                      │
+ │                      ├── *ngFor children → 📦 "Tarifni paketi" (BasicBlock) ← REKURZIJA!
+ │                      │                     │
+ │                      │                     ├── *ngFor inputs → 📄 TARIFA (Input)
+ │                      │                     ├── *ngFor inputs → 📄 ...
+ │                      │                     └── *ngFor children → 📦 ... ← OPET REKURZIJA!
+ │                      │
+ │                      ├── *ngFor children → 📦 "Preuzimanja" (BasicBlock) ← REKURZIJA!
+ │                      │                     │
+ │                      │                     ├── *ngFor inputs → ...
+ │                      │                     └── *ngFor children → ...
+ │                      │
+ │                      ├── *ngFor children → 📦 "Zabrana info" (BasicBlock)
+ │                      ├── *ngFor children → 📦 "POTS servis" (BasicBlock)
+ │                      └── ... (9 children ukupno)
+```
+
+---
+
+##### KLJUČNA STVAR: Ko je PARENT, a ko CHILD?
+
+Ovo je dio koji zbunjuje. Hajde da ga raščistimo potpuno.
+
+```
+PRAVILO: PARENT je onaj čiji template SADRŽI *ngFor.
+         CHILD je komponenta koju *ngFor KREIRA.
+```
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                              │
+│  BasicBlock template (OVO JE PARENT):                        │
+│  ════════════════════════════════════                         │
+│                                                              │
+│  this.items = { name: "FlatBHTelecom", ... }                 │
+│  this.model = db.model                                       │
+│                                                              │
+│  <z-contentloader                                            │
+│    *ngFor="let children of items.children"  ← PARENT čita   │
+│    [items]="children"  ────────────────────── PARENT šalje   │
+│    [model]="model[items.name]" ───────────── PARENT šalje    │
+│    [parent]="model"  ─────────────────────── PARENT šalje    │
+│  >                                                           │
+│                                                              │
+│     │         │           │                                  │
+│     │ items   │ model     │ parent                           │
+│     ▼         ▼           ▼                                  │
+│                                                              │
+│  ┌───────────────────────────────────────────────────────┐   │
+│  │                                                        │   │
+│  │  ContentLoader (OVO JE CHILD):                         │   │
+│  │  ═════════════════════════════                         │   │
+│  │                                                        │   │
+│  │  @Input() items = { name:"Tarifnipaketi", ... }        │   │
+│  │  @Input() model = db.model["FlatBHTelecom"]            │   │
+│  │  @Input() parent = db.model                            │   │
+│  │                                                        │   │
+│  │  Child NE BIRA šta prima!                              │   │
+│  │  Parent ODLUČUJE šta šalje!                            │   │
+│  │                                                        │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Analogija - Roditelj i dijete u školi:**
+```
+RODITELJ (BasicBlock) pakuje RUKSAK za dijete (ContentLoader):
+
+  📋 [items]="children"
+     → Stavlja u ruksak DNEVNIK (informacije o razredu)
+     → Dijete zna u koji razred ide
+
+  📋 [model]="model[items.name]"
+     → Stavlja u ruksak KLJUČ OD SVOG UREDA
+     → Dijete može raditi SAMO u roditeljskom uredu
+     → NE daje mu ključ cijele kuće!
+
+  📋 [parent]="model"
+     → Stavlja u ruksak KLJUČ CIJELE KUĆE (za hitne slučajeve)
+     → Dijete može pristupiti svemu AKO TREBA
+```
+
+---
+
+##### DVA TIPA SORTIRANJA: DefaultBlock vs BasicBlock
+
+**Ovo je KRITIČNA razlika za razumijevanje child dijela:**
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║  DefaultBlock prosleđuje djeci:                               ║
+║  ─────────────────────────────                                ║
+║  [model]="model"           ← CIJELI model (cijela kuća!)     ║
+║  [parent]="parent"         ← parent od svog parent-a          ║
+║                                                               ║
+║  BasicBlock prosleđuje djeci:                                 ║
+║  ────────────────────────────                                 ║
+║  [model]="model[items.name]"  ← NESTED DIO (samo svoj ured!) ║
+║  [parent]="model"             ← svoj model kao parent         ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+**Zašto je ovo važno? Pogledaj STVARNI primjer:**
+
+```typescript
+// DefaultBlock ("Flat paketi POTS") ima:
+this.model = db.model = {
+  auto: {},
+  FlatpaketiPOTS: {},
+  FlatBHTelecom: {}
+}
+
+// DefaultBlock prosljeđuje "Flat BH Telecom"-u:
+[model]="model"  →  child.model = db.model (CIJELA KUĆA)
+
+// ────────────────────────────────────────────────
+
+// BasicBlock ("Flat BH Telecom") ima:
+this.model = db.model  // (primio je cijelu kuću od DefaultBlock-a)
+this.items.name = "FlatBHTelecom"
+
+// BasicBlock prosljeđuje "Tarifni paketi"-u:
+[model]="model[items.name]"
+       = model["FlatBHTelecom"]
+       = db.model["FlatBHTelecom"]  // (SAMO JEDAN URED!)
+       = { FIRSTNAME: null, NAME: null, JOBTITLE: null, ... }
+```
+
+```
+VIZUALNO:
+
+db.model (cijela kuća):
+┌──────────────────────────────────────┐
+│  auto: {}                             │
+│  FlatpaketiPOTS: {}                   │
+│  FlatBHTelecom: { ← OVO JE URED      │
+│    FIRSTNAME: null,                   │
+│    NAME: null,                        │
+│    JOBTITLE: null,                    │
+│    Tarifnipaketi: { ← SOBA U UREDU   │
+│      TARIFA: null,                    │
+│      ...                              │
+│    },                                 │
+│    Preuzimanja: { ← DRUGA SOBA       │
+│      ...                              │
+│    }                                  │
+│  }                                    │
+└──────────────────────────────────────┘
+
+DefaultBlock kaže:
+  "Sine, evo ti KLJUČ OD CIJELE KUĆE" → [model]="model"
+
+BasicBlock kaže:
+  "Sine, evo ti KLJUČ SAMO OD MOG UREDA" → [model]="model['FlatBHTelecom']"
+
+Kad child "Tarifni paketi" piše u model:
+  model["TARIFA"] = "Flat 1"
+To je ZAPRAVO:
+  db.model["FlatBHTelecom"]["TARIFA"] = "Flat 1"
+
+Jer model JE REFERENCA na db.model["FlatBHTelecom"]!
+```
+
+---
+
+##### KOMPLETNO STABLO - Od PageLoadera do zadnjeg inputa
+
+```
+PageLoader
+│ items = structure.structure (array)
+│ model = db.model
+│
+│ *ngFor="let item of items" → 1 iteracija
+│ [items]="item" + [model]="model"
+│
+└── ContentLoader (items.template = "default_block")
+    │ items = { name: "FlatpaketiPOTS" }
+    │ model = db.model                        ← CIJELI MODEL
+    │
+    └── DefaultBlock
+        │ *ngFor="let element of items.elements" → 1 iteracija
+        │ [items]="element" + [model]="model"     ← ŠALJE CIJELI MODEL!
+        │
+        └── ContentLoader (items.template = "basic_block")
+            │ items = { name: "FlatBHTelecom" }
+            │ model = db.model                    ← JOŠ UVIJEK CIJELI MODEL
+            │
+            └── BasicBlock
+                │
+                │ *ngFor="let input of items.inputs" → 14 iteracija
+                │ [items]="input" + [model]="model['FlatBHTelecom']"  ← DIO MODELA!
+                │
+                ├── ContentLoader → Input (FIRSTNAME)
+                │   items = { name: "FIRSTNAME" }
+                │   model = db.model["FlatBHTelecom"]     ← REFERENCA!
+                │   → ValueManager.set() → model["FIRSTNAME"] = null
+                │   → REZULTAT: db.model["FlatBHTelecom"]["FIRSTNAME"] = null
+                │
+                ├── ContentLoader → Input (NAME)
+                │   items = { name: "NAME" }
+                │   model = db.model["FlatBHTelecom"]     ← ISTA REFERENCA!
+                │   → ValueManager.set() → model["NAME"] = null
+                │   → REZULTAT: db.model["FlatBHTelecom"]["NAME"] = null
+                │
+                ├── ... (još 12 inputa)
+                │
+                │
+                │ *ngFor="let children of items.children" → 9 iteracija
+                │ [items]="children" + [model]="model['FlatBHTelecom']"  ← DIO MODELA!
+                │
+                ├── ContentLoader (items.template = "basic_block") ← REKURZIJA!
+                │   │ items = { name: "Tarifnipaketi" }
+                │   │ model = db.model["FlatBHTelecom"]
+                │   │
+                │   └── BasicBlock
+                │       │
+                │       │ *ngFor inputs → [model]="model['Tarifnipaketi']"
+                │       │              = db.model["FlatBHTelecom"]["Tarifnipaketi"]
+                │       │
+                │       ├── Input (TARIFA)
+                │       │   model["TARIFA"] = null
+                │       │   = db.model["FlatBHTelecom"]["Tarifnipaketi"]["TARIFA"] = null
+                │       │
+                │       └── *ngFor children → ... (OPET REKURZIJA!)
+                │
+                ├── ContentLoader → BasicBlock ("Preuzimanja")
+                │   └── ...
+                │
+                └── ... (još 7 children)
+```
+
+---
+
+#### 1.6 MEMORIJSKI TRIKOVI - Kako zapamtiti
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║  TRIK 1: *ngFor = FOTOKOPIR MAŠINA                           ║
+║  ───────────────────────────────────                          ║
+║    Imate 1 original (HTML šablon)                             ║
+║    Imate 5 stranica za kopirati (array sa 5 elemenata)        ║
+║    Fotokopir pravi 5 kopija, svaku sa drugačijim sadržajem    ║
+║                                                               ║
+║  TRIK 2: "let X of Y" = "UZMI X IZ Y"                        ║
+║  ──────────────────────────────────────                        ║
+║    let input of items.inputs                                  ║
+║    "Uzmi input iz items.inputs"                               ║
+║    "Uzmi jednu stvar iz kutije"                               ║
+║                                                               ║
+║  TRIK 3: [items]="nešto" = "STAVI U RUKSAK"                  ║
+║  ────────────────────────────────────────────                  ║
+║    Parent PAKUJE ruksak za child-a                             ║
+║    Child otvara ruksak i koristi sadržaj                       ║
+║                                                               ║
+║  TRIK 4: RAZLIKA DefaultBlock vs BasicBlock                   ║
+║  ───────────────────────────────────────────                   ║
+║    Default = "Evo ti cijela kuća" (model)                     ║
+║    Basic = "Evo ti samo tvoja soba" (model[items.name])       ║
+║                                                               ║
+║  TRIK 5: CHILD = nova instanca ISTE komponente                ║
+║  ─────────────────────────────────────────────                 ║
+║    Parent ContentLoader kreira child ContentLoader             ║
+║    Child ContentLoader kreira SVOG child ContentLoader         ║
+║    = REKURZIJA (Matrjoška lutke)                               ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+---
+
+### DIO 2: Dinamičko kreiranje komponenti (items.template → Component)
+
+---
+
+#### 2.1 SISTEM SA 3 DIJELA
+
+Zamislite **biblioteku** sa **katalogom**:
+
+```
+📚 BIBLIOTEKA KOMPONENTI (dynamic.module.ts)
+   │
+   │  Na polici u biblioteci stoje FIZIČKE knjige (komponente):
+   │
+   ├── 📕 Knjiga #0: BasicBlockComponent
+   ├── 📘 Knjiga #1: DefaultBlockComponent
+   ├── 📙 Knjiga #2: CheckBlockComponent
+   ├── 📗 Knjiga #3: StandardPopupComponent
+   ├── 📓 Knjiga #4: SwitchTabComponent
+   ├── 📔 Knjiga #5: FormComponent
+   ├── 📕 Knjiga #6: ButtonComponent
+   ├── 📘 Knjiga #7: CheckboxComponent
+   ├── 📙 Knjiga #8: InputComponent
+   ├── 📗 Knjiga #9: PopupButtonComponent
+   └── ... (ukupno 27 komponenti)
+
+
+🗂️ KATALOG (dlcontent.ts - konstanta "key")
+   │
+   │  Katalog prevodi IME KNJIGE u BROJ POLICE:
+   │
+   ├── "basic_block" → Polica #0
+   ├── "default_block" → Polica #1
+   ├── "checkblock" → Polica #2
+   ├── "standard_popup" → Polica #3
+   ├── "switchtab" → Polica #4
+   ├── "form" → Polica #5
+   ├── "button" → Polica #6
+   ├── "checkbox" → Polica #7
+   ├── "input" → Polica #8
+   ├── "number" → Polica #8  ← ISTA POLICA kao "input"!
+   ├── "readonly" → Polica #8  ← ISTA POLICA kao "input"!
+   ├── "popbutton" → Polica #9
+   └── ... (ukupno 27 mapiranja)
+
+
+👨‍💼 BIBLIOTEKAR (DLContent komponenta)
+   │
+   │  Bibliotekar:
+   │  1. Prima NALOG (items.template = "basic_block")
+   │  2. Gleda u KATALOG (key["basic_block"] = 0)
+   │  3. Uzima knjigu sa POLICE #0 (Components[0] = BasicBlockComponent)
+   │  4. KREIRA KOPIJU knjige za tebe (createComponent)
+   │  5. UPISUJE tvoje podatke u kopiju (Object.assign)
+```
+
+---
+
+#### 2.2 STVARNI KOD - Korak po korak
+
+##### KORAK 1: Biblioteka komponenti se kreira
+
+**File:** `dynamic.module.ts` (linija 72-101)
+
+```typescript
+export const Components = [
+  BasicBlockComponent,        // Index 0
+  DefaultBlockComponent,      // Index 1
+  CheckBlockComponent,        // Index 2
+  StandardPopupComponent,     // Index 3
+  SwitchTabComponent,         // Index 4
+  FormComponent,              // Index 5
+  ButtonComponent,            // Index 6
+  CheckboxComponent,          // Index 7
+  InputComponent,             // Index 8
+  PopupButtonComponent,       // Index 9
+  RadioComponent,             // Index 10
+  SelectComponent,            // Index 11
+  TextareaComponent,          // Index 12
+  DateComponent,              // Index 13
+  DynamicTableComponent,      // Index 14
+  AgGridComponent,            // Index 15
+  DynamicTableRowComponent,   // Index 16
+  PriceBlockComponent,        // Index 17
+  NavigatorComponent,         // Index 18
+  MultipleSwitchTabComponent, // Index 19
+  NotificationComponent,      // Index 20
+  InOutComponent,             // Index 21
+  CheckboxADComponent,        // Index 22
+  TabViewComponent,           // Index 23
+  PageTabComponent,           // Index 24
+  AutoCompleteComponent,      // Index 25
+  BoxOptionsComponent,        // Index 26
+  NavigatorComponentMojIzborComponent  // Index 27
+];
+```
+
+**Šta se ovdje dešava:**
+
+```
+Components je ARRAY sa KLASAMA (ne instance, nego definicije!)
+
+Components[0] = BasicBlockComponent
+Components[1] = DefaultBlockComponent
+Components[8] = InputComponent
+...
+
+To je kao KATALOG sa RECEPTIMA:
+  - Index 0 = Recept za pravljenje BasicBlock torte
+  - Index 1 = Recept za pravljenje DefaultBlock torte
+  - Index 8 = Recept za pravljenje Input torte
+```
+
+---
+
+##### KORAK 2: Katalog (mapa) se kreira
+
+**File:** `dlcontent.ts` (linija 16-47)
+
+```typescript
+export const key = {
+    basic_block: 0,          // "basic_block" → Components[0]
+    default_block: 1,        // "default_block" → Components[1]
+    checkblock: 2,           // "checkblock" → Components[2]
+    standard_popup: 3,       // itd...
+    switchtab: 4,
+    form: 5,
+    button: 6,
+    checkbox: 7,
+    input: 8,                // "input" → Components[8]
+    number: 8,               // "number" → Components[8] (ISTI kao input!)
+    readonly: 8,             // "readonly" → Components[8] (ISTI kao input!)
+    popbutton: 9,
+    radio: 10,
+    select: 11,
+    textarea: 12,
+    date: 13,
+    tableview: 14,
+    grid: 15,
+    tablerow: 16,
+    PriceBlock: 17,
+    navigator: 18,
+    MultipleSwitchTab: 19,
+    Notification: 20,
+    InOut: 21,
+    CheckboxAD: 22,
+    TabView: 23,
+    PageTab: 24,
+    AutoComplete: 25,
+    BoxOptions: 26,
+    navigatormojizbor: 27
+};
+```
+
+**Šta je "key" objekat?**
+
+```
+key je MAPA koja prevodi STRING u NUMBER:
+
+  key["basic_block"] = 0
+  key["default_block"] = 1
+  key["input"] = 8
+  key["number"] = 8  ← ISTI broj!
+  key["readonly"] = 8  ← ISTI broj!
+
+Zašto "input", "number", i "readonly" imaju ISTI broj?
+  Jer sve TRI koriste InputComponent!
+  To je kao 3 različita imena za istu knjigu:
+    - "Harry Potter" (input)
+    - "HP1" (number)
+    - "The Boy Who Lived" (readonly)
+  Sve pokazuju na ISTU knjigu na polici #8!
+```
+
+**Analogija - Telefonski imenik:**
+
+```
+┌─────────────────────────────────┐
+│  IMENIK (key objekat)            │
+├─────────────────────────────────┤
+│  Pekara "Kod Marka"  → 061-123  │ ← key["basic_block"] = 0
+│  Mesara "Zlatni Rezač" → 061-456│ ← key["default_block"] = 1
+│  Pizza "Napoli"      → 061-789  │ ← key["input"] = 8
+│  Pizza "Napoli Nord" → 061-789  │ ← key["number"] = 8 (isti broj!)
+│  Pizza "Napoli Jug"  → 061-789  │ ← key["readonly"] = 8 (isti broj!)
+└─────────────────────────────────┘
+
+Zoveš različito ime, dobiješ ISTI broj, dođeš na ISTO mjesto!
+```
+
+---
+
+##### KORAK 3: Bibliotekar prima nalog
+
+**File:** `contentloader.template.html`
+
+```html
+<span *ngIf="items.active">
+  <z-dlcontent
+    [template]="items.template"   ← NALOG: "basic_block"
+    [inputs]="{
+      items: items,
+      model: model,
+      ...
+    }">
+  </z-dlcontent>
+</span>
+```
+
+**Šta se dešava:**
+
+```
+ContentLoader renderuje template:
+
+  <z-dlcontent
+    [template]="items.template"
+    [inputs]="{ ... }">
+  </z-dlcontent>
+
+
+Ako je items.template = "basic_block", Angular prosleđuje:
+
+  @Input() template = "basic_block"  ← STRING!
+  @Input() inputs = { items: {...}, model: {...}, ... }
+```
+
+```
+ANALOGIJA:
+
+Dolazite u biblioteku i dajete NALOG bibliotekaru:
+
+  Kupac (ContentLoader): "Molim vas, treba mi knjiga 'basic_block'"
+  Bibliotekar (DLContent): "U redu, potražiću u katalogu..."
+```
+
+---
+
+##### KORAK 4: Bibliotekar traži u katalogu i uzima knjigu
+
+**File:** `dlcontent.ts` (linija 65-74)
+
+```typescript
+updateComponent() {
+    if (!this.isViewInitialized) { return; }
+    if (this.cmpRef) { this.cmpRef.destroy(); }
+
+    // LINIJA 69: KLJUČNA LINIJA!
+    let component: any = Components[key[this.template]];
+    //                   │         │   └── this.template = "basic_block"
+    //                   │         └────── key["basic_block"] = 0
+    //                   └──────────────── Components[0] = BasicBlockComponent
+
+    // component = BasicBlockComponent (KLASA, ne instanca!)
+
+    let factory = this.cfResolver.resolveComponentFactory(component);
+    // factory = "recept" kako napraviti BasicBlockComponent
+
+    this.cmpRef = this.target.createComponent(factory)
+    // KREIRA NOVU INSTANCU BasicBlockComponent-a!
+
+    Object.assign(this.cmpRef.instance, this.inputs)
+    // PROSLJEĐUJE SVE inputs (items, model, parent...) novoj instanci
+
+    this.cdRef.detectChanges();
+    // Kaže Angularu: "Ažuriraj view!"
+}
+```
+
+---
+
+#### 2.3 RAŠČLANJIVANJE LINIJE 69 - KORAK PO KORAK
+
+Ovo je **KLJUČNA LINIJA** gdje se dešava mapiranje:
+
+```typescript
+let component: any = Components[key[this.template]];
+```
+
+Hajde da je razložimo **IZNUTRA KA SPOLJA**:
+
+##### KORAK A: Prvo se izvršava `this.template`
+
+```typescript
+this.template = "basic_block"  // STRING koji je prosleđen iz ContentLoader-a
+```
+
+```
+Bibliotekar gleda u NALOG:
+  "Kupac traži knjigu sa nazivom 'basic_block'"
+```
+
+---
+
+##### KORAK B: Zatim se izvršava `key[this.template]`
+
+```typescript
+key[this.template]
+= key["basic_block"]   // Pristup property-ju objekta "key"
+= 0                    // Vrijednost koja se nalazi u key objektu
+```
+
+**Kako radi pristup objektu?**
+
+```typescript
+// key je objekat:
+const key = {
+    basic_block: 0,
+    default_block: 1,
+    input: 8,
+    // ...
+};
+
+// Pristup property-ju:
+key["basic_block"]  // Vraća: 0
+key.basic_block     // Isto kao gore (alternativna sintaksa)
+
+// Varijabilni pristup:
+let template = "basic_block";
+key[template]       // Vraća: 0 (koristi vrijednost varijable)
+```
+
+```
+Bibliotekar gleda u KATALOG:
+  "U katalogu piše: 'basic_block' se nalazi na polici #0"
+```
+
+---
+
+##### KORAK C: Na kraju se izvršava `Components[...]`
+
+```typescript
+Components[key[this.template]]
+= Components[0]                  // Pristup array-u na indexu 0
+= BasicBlockComponent            // Klasa koja se nalazi na indexu 0
+```
+
+**Kako radi pristup array-u?**
+
+```typescript
+// Components je array:
+const Components = [
+    BasicBlockComponent,        // index 0
+    DefaultBlockComponent,      // index 1
+    CheckBlockComponent,        // index 2
+    // ...
+];
+
+// Pristup elementu:
+Components[0]  // Vraća: BasicBlockComponent
+Components[1]  // Vraća: DefaultBlockComponent
+
+// Varijabilni pristup:
+let index = 0;
+Components[index]  // Vraća: BasicBlockComponent (koristi vrijednost varijable)
+```
+
+```
+Bibliotekar ide do POLICE #0 i uzima KNJIGU:
+  "Na polici #0 se nalazi knjiga 'BasicBlockComponent'"
+```
+
+---
+
+##### REZULTAT:
+
+```typescript
+let component = BasicBlockComponent;  // Sada "component" varijabla pokazuje na KLASU
+```
+
+```
+Bibliotekar drži knjigu u rukama:
+  "Imam recept kako napraviti BasicBlock"
+```
+
+---
+
+#### 2.4 KONKRETNI PRIMJERI - Različiti template stringovi
+
+```typescript
+// PRIMJER 1: items.template = "basic_block"
+this.template = "basic_block"
+key[this.template] = key["basic_block"] = 0
+Components[0] = BasicBlockComponent
+→ KREIRA BasicBlockComponent
+
+// PRIMJER 2: items.template = "default_block"
+this.template = "default_block"
+key[this.template] = key["default_block"] = 1
+Components[1] = DefaultBlockComponent
+→ KREIRA DefaultBlockComponent
+
+// PRIMJER 3: items.template = "input"
+this.template = "input"
+key[this.template] = key["input"] = 8
+Components[8] = InputComponent
+→ KREIRA InputComponent
+
+// PRIMJER 4: items.template = "number"
+this.template = "number"
+key[this.template] = key["number"] = 8  ← ISTI INDEX kao "input"!
+Components[8] = InputComponent
+→ KREIRA InputComponent (ISTU kao za "input"!)
+
+// PRIMJER 5: items.template = "readonly"
+this.template = "readonly"
+key[this.template] = key["readonly"] = 8  ← ISTI INDEX!
+Components[8] = InputComponent
+→ KREIRA InputComponent (OPET ISTU!)
+```
+
+---
+
+#### 2.5 ANALOGIJA - Kompletna priča
+
+```
+🏢 FIRMA "DYNAMIC COMPONENTS DOO"
+───────────────────────────────────
+
+📋 NARUDŽBENICA od kupca (ContentLoader):
+   "Potrebna mi je komponenta tipa: 'basic_block'"
+   ↓
+   [template]="items.template"  → template = "basic_block"
+
+👨‍💼 NARUDŽBE (DLContent - updateComponent):
+   Prima narudžbenicu i kreće u proces...
+
+📚 KORAK 1: Pogledaj u KATALOG (key objekat)
+   "basic_block" se mapira na kod: 0
+   key["basic_block"] = 0
+
+📦 KORAK 2: Idi u MAGACIN (Components array)
+   Uzmi proizvod sa šifrom 0
+   Components[0] = BasicBlockComponent
+
+🏭 KORAK 3: Pošalji u PROIZVODNJU (ComponentFactoryResolver)
+   factory = this.cfResolver.resolveComponentFactory(BasicBlockComponent)
+   "Napravi novu instancu prema ovom receptu"
+
+📦 KORAK 4: KREIRAJ PROIZVOD (createComponent)
+   this.cmpRef = this.target.createComponent(factory)
+   Nova instanca BasicBlockComponent-a je kreirana!
+
+✍️ KORAK 5: PERSONALIZUJ PROIZVOD (Object.assign)
+   Object.assign(this.cmpRef.instance, this.inputs)
+   Upiši podatke kupca: items, model, parent, vparent...
+
+✅ KORAK 6: ISPORUČI KUPCU (detectChanges)
+   this.cdRef.detectChanges()
+   "Proizvod je spreman! Prikaži ga u UI-ju"
+```
+
+---
+
+#### 2.6 ZAŠTO DVA NIVOA? (key objekat + Components array)
+
+Možda se pitaš: **Zašto ne direktno mapirati?**
+
+```typescript
+// OPCIJA 1 (trenutna implementacija):
+const key = { basic_block: 0 };
+const Components = [BasicBlockComponent];
+let component = Components[key["basic_block"]];
+
+// OPCIJA 2 (teoretska alternativa):
+const ComponentsMap = {
+  basic_block: BasicBlockComponent
+};
+let component = ComponentsMap["basic_block"];
+```
+
+**Odgovor: Legacy kod + fleksibilnost**
+
+```
+RAZLOG 1: Legacy
+  Backend šalje template stringove: "basic_block", "default_block"...
+  Ali Angular treba ARRAY za entryComponents (stara verzija Angulara)
+  key objekat je MOST između backend konvencije i Angular potreba
+
+RAZLOG 2: Više stringova → ista komponenta
+  "input", "number", "readonly" → svi koriste InputComponent
+  key["input"] = 8
+  key["number"] = 8
+  key["readonly"] = 8
+  Components[8] = InputComponent
+  Lakše održavati jedan mapiranje nego duplirati logiku
+
+RAZLOG 3: Mogućnost override-a
+  Možeš lako promijeniti mapiranje:
+  key["basic_block"] = 10  (koristi novu komponentu)
+  Ne moraš dirati Components array
+```
+
+---
+
+#### 2.7 ŠTA SE DEŠAVA NAKON KREIRANJA? (Object.assign)
+
+```typescript
+Object.assign(this.cmpRef.instance, this.inputs)
+```
+
+**Šta je `this.inputs`?**
+
+```typescript
+// U contentloader.template.html:
+[inputs]="{
+  items: items,           // items objekat iz ContentLoader-a
+  model: model,           // model objekat
+  parent: parent,         // parent objekat
+  pname: pname,           // pname string
+  vparent: vparent,       // vparent objekat
+  valid: valid[index] || valid,
+  parameters: items.parameters,
+  output: output[index] || output[items.name] || output
+}"
+
+// DLContent prima:
+@Input() inputs = {
+  items: { name: "FlatBHTelecom", template: "basic_block", ... },
+  model: db.model,
+  parent: undefined,
+  pname: undefined,
+  vparent: db.valid,
+  valid: db.valid.children,
+  parameters: undefined,
+  output: db.output
+};
+```
+
+**Šta radi `Object.assign`?**
+
+```typescript
+// this.cmpRef.instance = nova instanca BasicBlockComponent-a
+
+Object.assign(this.cmpRef.instance, this.inputs)
+
+// JE ISTO KAO:
+this.cmpRef.instance.items = this.inputs.items;
+this.cmpRef.instance.model = this.inputs.model;
+this.cmpRef.instance.parent = this.inputs.parent;
+this.cmpRef.instance.pname = this.inputs.pname;
+this.cmpRef.instance.vparent = this.inputs.vparent;
+this.cmpRef.instance.valid = this.inputs.valid;
+this.cmpRef.instance.parameters = this.inputs.parameters;
+this.cmpRef.instance.output = this.inputs.output;
+```
+
+**Analogija - Popunjavanje formulara:**
+
+```
+Imate PRAZAN FORMULAR (nova instanca BasicBlockComponent):
+
+┌─────────────────────────┐
+│  BasicBlock              │
+├─────────────────────────┤
+│  items: [ ]              │ ← Prazno polje
+│  model: [ ]              │ ← Prazno polje
+│  parent: [ ]             │ ← Prazno polje
+│  vparent: [ ]            │ ← Prazno polje
+│  ...                     │
+└─────────────────────────┘
+
+Object.assign POPUNJAVA FORMULAR:
+
+┌─────────────────────────┐
+│  BasicBlock              │
+├─────────────────────────┤
+│  items: {name:"FlatBH"}  │ ← Popunjeno!
+│  model: db.model         │ ← Popunjeno!
+│  parent: undefined       │ ← Popunjeno!
+│  vparent: db.valid       │ ← Popunjeno!
+│  ...                     │
+└─────────────────────────┘
+```
+
+---
+
+#### 2.8 KOMPLETNA PRIČA - Od backend-a do renderovanja
+
+```
+BACKEND šalje JSON:
+══════════════════
+{
+  "name": "FlatBHTelecom",
+  "template": "basic_block",  ← STRING!
+  "inputs": [...]
+}
+
+↓
+
+CONTENTLOADER prima items:
+══════════════════════════
+this.items = { template: "basic_block", ... }
+
+↓
+
+CONTENTLOADER renderuje <z-dlcontent>:
+═══════════════════════════════════════
+<z-dlcontent
+  [template]="items.template"   ← "basic_block"
+  [inputs]="{ items, model, ... }">
+</z-dlcontent>
+
+↓
+
+DLCONTENT prima @Input():
+═════════════════════════
+@Input() template = "basic_block"
+@Input() inputs = { items: {...}, model: {...} }
+
+↓
+
+DLCONTENT.updateComponent() SE IZVRŠAVA:
+════════════════════════════════════════
+1. key["basic_block"] = 0
+2. Components[0] = BasicBlockComponent
+3. factory = cfResolver.resolveComponentFactory(BasicBlockComponent)
+4. cmpRef = target.createComponent(factory)  ← NOVA INSTANCA!
+5. Object.assign(cmpRef.instance, inputs)   ← POPUNJAVANJE!
+6. cdRef.detectChanges()                     ← RENDEROVANJE!
+
+↓
+
+BASICBLOCK SE RENDERUJE:
+════════════════════════
+<div class="z-basic-block">
+  <z-contentloader *ngFor="let input of items.inputs" ...>
+  <z-contentloader *ngFor="let children of items.children" ...>
+</div>
+
+↓
+
+*ngFor KREIRA NOVE <z-contentloader> INSTANCE:
+══════════════════════════════════════════════
+Za svaki input/child, proces se PONAVLJA!
+```
+
+---
+
+### 📦 FINALNI REZIME - Sve na jednom mjestu
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║  ŠTA SMO NAUČILI:                                             ║
+║  ═══════════════                                              ║
+║                                                               ║
+║  1️⃣ *ngFor = FOTOKOPIR MAŠINA                                ║
+║     Za SVAKI element u array-u, kreira KOPIJU HTML elementa   ║
+║                                                               ║
+║  2️⃣ let item of items                                         ║
+║     "item" = lokalna varijabla za trenutni element            ║
+║     "items" = @Input() array iz parent komponente             ║
+║                                                               ║
+║  3️⃣ [items]="item" = PROPERTY BINDING                         ║
+║     Parent prosljeđuje podatke child-u                         ║
+║                                                               ║
+║  4️⃣ REKURZIJA                                                 ║
+║     ContentLoader poziva ContentLoader koji poziva...          ║
+║     = Stablo komponenti proizoljne dubine                     ║
+║                                                               ║
+║  5️⃣ items.template = "basic_block"                            ║
+║     → key["basic_block"] = 0                                  ║
+║     → Components[0] = BasicBlockComponent                     ║
+║     → createComponent(BasicBlockComponent)                    ║
+║     = NOVA INSTANCA komponente!                               ║
+║                                                               ║
+║  6️⃣ Object.assign(instance, inputs)                           ║
+║     Prosljeđuje sve @Input() podatke novoj instanci           ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+---
+
+**Sada kada razumiješ Angular Data Binding, *ngFor, i dinamičko kreiranje komponenti,
+  spreman si za DETALJNE KORAKE gdje ćeš vidjeti SVE OVO U AKCIJI!** 🎯🚀
+
+---
+
 ### DETALJNI KORACI
 
 #### KORAK 5.1: PageLoader renderuje template
