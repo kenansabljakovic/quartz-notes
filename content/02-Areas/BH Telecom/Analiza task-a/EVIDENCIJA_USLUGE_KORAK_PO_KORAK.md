@@ -2,6 +2,10 @@
 
 Kompletna analiza `evidencija-usluge.component.ts` i `evidencija-usluge.template.html` komponente, objašnjena korak po korak.
 
+## 🔗 Brzi linkovi (Quick Navigation)
+
+- [DODATAK: db.model Lifecycle - Od inicijalizacije do suicapture](#dodatak-dbmodel-lifecycle---od-inicijalizacije-do-suicapture)
+
 ---
 
 ## KORAK 1: Deklaracija komponente (linija 1-75)
@@ -9425,4 +9429,1414 @@ db.model = {
 *Dodatak 1: Detaljno objašnjenje `this` ključne riječi*
 *Korak 2: ngOnInit() - Startovanje komponente*
 *Dodatak 2: Callback parametar u getDynamic()*
+
+---
+
+# DODATAK: db.model Lifecycle - Od inicijalizacije do suicapture
+
+Kompletno objašnjenje kako se `db.model` inicijalizuje, puni podacima, i šalje na backend kroz `suicapture` mehanizam - **sa stvarnim podacima iz sistema**.
+
+---
+
+## 🏠 ANALOGIJA: Kuća koja se gradi i fotografiše
+
+Zamislite da gradite kuću:
+
+1. **assignObjects()** → Prazna gradilišna parcela (prazan objekat)
+2. **getDynamic()** → Naručivanje građevinskih planova (backend šalje strukturu)
+3. **Template rendering** → Postavljanje temelja i zidova (angular renderuje formu)
+4. **ValueManager.set()** → Graditelji dodaju sobe, vrata, prozore (popunjavanje db.model-a)
+5. **Korisnik unosi podatke** → Stanari se uselivaju i namještaju kuću
+6. **saveSuicapture()** → Fotograf snima trenutno stanje kuće
+7. **loadDynamicData()** → Obnavljanje kuće iz fotografije
+
+---
+
+## KORAK 1: db servis se injektuje u constructor
+
+**File:** `evidencija-usluge.component.ts`
+
+```typescript
+constructor(
+  public db: Model,
+  // ... other services
+) {}
+```
+
+### Šta je `db`?
+
+`db` je **singleton service** - postoji samo JEDNA INSTANCA u cijeloj aplikaciji!
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Model Service (db)                                      │
+│  ────────────────────────────────────────────────────   │
+│                                                          │
+│  db = {                                                  │
+│    model: {},      ← OVDJE SE ČUVAJU SVI PODACI!        │
+│    output: {},                                           │
+│    params: {},                                           │
+│    valid: {},                                            │
+│    mod: 'new',                                           │
+│    // ... metode: assign(), set(), setmod()...          │
+│  }                                                       │
+│                                                          │
+│  ✓ SINGLETON: Sve komponente koriste ISTI db objekat!   │
+│  ✓ db.model je REFERENCA: mijenjamo ORIGINAL!           │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Ključno:**
+Kada ContentLoader dobije `[model]="db.model"`, on NE dobiva **kopiju**, nego **referencu** na ORIGINALNI objekat!
+
+---
+
+## KORAK 2: assignObjects() - Kreiranje praznog db.model
+
+**File:** `evidencija-usluge.component.ts`
+
+```typescript
+assignObjects() {
+  this.Dependency.clear();
+  this.structure = {};
+  this.db.clear(['active', 'activechild'])
+    .assign("model", { auto: {} })
+    .assign("output")
+    .assign("params")
+    .assign("valid", {
+      name: "evidencija",
+      active: true,
+      valid: true,
+      errors: 0,
+      children: {}
+    });
+}
+```
+
+### Šta radi `db.assign("model", { auto: {} })`?
+
+```typescript
+// model.service.ts
+public assign(name: string, object?: any) {
+  this[name] = object || {};
+  return this;
+}
+```
+
+**Rezultat:**
+```javascript
+db.model = { auto: {} }  // ← PRAZAN objekat (osim "auto" property-a)
+```
+
+### Visualizacija:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  PRIJE assignObjects()                                  │
+│  ────────────────────────────────────────────────────  │
+│  db.model = {                                           │
+│    FlatBHTelecom: { FIRSTNAME: "Adnan", NAME: "Hodžić" }│
+│    ... (stari podaci iz prethodne forme)                │
+│  }                                                      │
+└─────────────────────────────────────────────────────────┘
+                        │
+                        ↓
+              assignObjects()
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│  NAKON assignObjects()                                  │
+│  ────────────────────────────────────────────────────  │
+│  db.model = {                                           │
+│    auto: {}    ← SAMO ovo! Sve ostalo obrisano!         │
+│  }                                                      │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Analogija:** Sklonili smo sav namještaj iz kuće prije nego što počnemo renoviranje!
+
+---
+
+## KORAK 3: getDynamic() - Postavljanje moda i dohvatanje strukture
+
+**File:** `evidencija-usluge.component.ts`
+
+```typescript
+getDynamic(type: number, callback?: string, param?: any) {
+  console.log('--- getDynamic() START ---');
+  console.log('type:', type);  // 100
+
+  // 1. PRVO: Postavi mod ('disabled', 'new', 'edit', 'preview')
+  this.db.setmod(this.load.mod);  // this.load.mod = "new"
+
+  // 2. DRUGO: Napravi API poziv prema backendu
+  this.ApiDispatcher.set({
+    method: "/uomback/dynamicproduct/getdynamic",
+    params: { type: 100 }
+  }).call((structure) => {
+    console.log('struktura stigla sa backenda:', structure);
+
+    // 3. TREĆE: Spremi strukturu
+    this.structure = structure;
+
+    // 4. ČETVRTO: Merguj parametre
+    Object.assign(this.db.params, structure.parameters || {});
+    Object.assign(this.db.params, this.params || {});
+    this.setparms();
+
+    // 5. PETO: Pozovi callback ako postoji
+    callback ? this[callback](param) : null;  // 'validateinformations'
+  });
+}
+```
+
+### Backend vraća stvarnu strukturu:
+
+```javascript
+structure = {
+  parameters: { type: 100 },
+  structure: {
+    name: "Osnovne usluge",
+    code: "979",
+    label: "Flat paketi POTS",
+    template: "default_block",
+    elements: [
+      {
+        name: "loadOffer979",
+        template: "select",
+        value: {
+          defaultValue: "5919",
+          data: [
+            { value: "5919", name: "Flat BH Telecom" }
+          ]
+        }
+      },
+      {
+        name: "FlatBHTelecom",
+        code: "5919",
+        label: "Flat BH Telecom",
+        template: "basic_block",
+        businessParams: { ACTION_CODE: "NewPOTS" },
+        inputs: [
+          {
+            name: "FIRSTNAME",
+            label: "Ime",
+            template: "input",
+            elementType: "text",
+            value: {
+              generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual"
+            }
+          },
+          {
+            name: "NAME",
+            label: "Prezime/Naziv",
+            template: "input",
+            elementType: "text",
+            validation: { mandatory: true },
+            value: {
+              generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'LASTNAME') from dual"
+            }
+          },
+          {
+            name: "JOBTITLE",
+            label: "Funkcija",
+            template: "select",
+            elementType: "select"
+          },
+          {
+            name: "PRIKLJUCAK_ADSL",
+            label: "Na lokaciji",
+            template: "select",
+            elementType: "select"
+          }
+          // ... ostali inputi
+        ],
+        children: [
+          { name: "Preuzimanja", code: "164", template: "default_block" },
+          { name: "Tarifnipaketi", template: "default_block" }
+          // ... ostale children
+        ]
+      }
+    ]
+  }
+}
+```
+
+### db.params nakon merga:
+
+```javascript
+db.params = {
+  type: 100,
+  processGroupCode: 'RESIDENTIAL_SALES',
+  r: ['ca', 'ba'],
+  orderTypeName: 'Osnovne usluge',
+  caId: '130025794',
+  P_APP_USER: "aa",
+  P_BA_ID: 330021716,
+  P_CA_ID: 130025794,
+  P_LOGGED_USER: "Authorized ",
+  P_MAIN_OFFER_ID: "5919",
+  P_SALES_CHANNEL: "BACK",
+  P_SALES_SUB_LOCATION_ID: 45,
+  baId: "330021716",
+  code: "979",
+  processId: "10"
+}
+```
+
+---
+
+## KORAK 4: Template rendering - Prosljeđivanje db.model reference
+
+**File:** `evidencija-usluge.template.html`
+
+```html
+<z-pageloader
+  [items]="structure.structure"
+  [model]="db.model"
+  ~~~~~~~~~~~~~~
+      │
+      └─→ OVO JE REFERENCA, NE KOPIJA!
+  [params]="db.params"
+  [output]="db.output"
+  [valid]="db.valid">
+</z-pageloader>
+```
+
+### Visualizacija:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  evidencija-usluge.component                             │
+│  ──────────────────────────────────────────────────────  │
+│  db.model = { auto: {} }  ← ORIGINAL OBJEKAT             │
+│              │                                            │
+│              └─────────────┐                              │
+└────────────────────────────┼──────────────────────────────┘
+                             │ [model]="db.model"
+                             ↓ (REFERENCA!)
+┌────────────────────────────┼──────────────────────────────┐
+│  z-pageloader              │                              │
+│  ──────────────────────────┼────────────────────────────  │
+│  @Input() model = db.model ← ISTA REFERENCA!              │
+│                    │                                      │
+│                    └─────────────┐                        │
+└──────────────────────────────────┼────────────────────────┘
+                                   │ [model]="model"
+                                   ↓ (REFERENCA!)
+┌──────────────────────────────────┼────────────────────────┐
+│  z-contentloader               │                          │
+│  ──────────────────────────────┼────────────────────────  │
+│  @Input() model = db.model ← ISTA REFERENCA!              │
+└────────────────────────────────────────────────────────────┘
+
+✓ SVI POKAZUJU NA db.model!
+✓ Promjena u jednoj komponenti → mijenja se SVUGDJE!
+```
+
+---
+
+## KORAK 5: ValueManager.set() - Popunjavanje db.model-a korak-po-korak
+
+### KORAK 5.1: FlatpaketiPOTS (default_block)
+
+**File:** `contentloader.component.ts`
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);        // FlatpaketiPOTS
+  console.log('items.template:', this.items.template);// default_block
+  console.log('items.code:', this.items.code);        // 979
+
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {"auto":{}}
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":null}
+}
+```
+
+**Šta se dogodilo?**
+
+```javascript
+// value.manager.ts - setDefaultValue()
+if (model[el.name] === undefined) {  // model["FlatpaketiPOTS"] === undefined
+  model[el.name] = null;             // model["FlatpaketiPOTS"] = null
+}
+
+// REZULTAT:
+db.model = {
+  auto: {},
+  FlatpaketiPOTS: null  // ← DODANO!
+}
+```
+
+### KORAK 5.2: DefaultBlock kreira nested objekat
+
+**File:** `defaultblock.component.ts`
+
+```typescript
+ngOnInit() {
+  console.log('=== DefaultBlock ngOnInit ===');
+  console.log('items.name:', this.items.name);    // FlatpaketiPOTS
+  console.log('items.label:', this.items.label);  // "Flat paketi POTS"
+  console.log('items.code:', this.items.code);    // 979
+
+  console.log('model PRIJE kreiranja:', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":null}
+
+  if (!this.model[this.items.name]) {
+    this.model[this.items.name] = {};
+  }
+
+  console.log('model NAKON kreiranja:', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{}}
+
+  console.log('Kreiran nested objekat: model["FlatpaketiPOTS"] = {}');
+}
+```
+
+**Rezultat:**
+
+```javascript
+db.model = {
+  auto: {},
+  FlatpaketiPOTS: {}  // ← null → {} (nested objekat kreiran!)
+}
+```
+
+### KORAK 5.3: loadOffer979 (select)
+
+**File:** `contentloader.component.ts`
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);        // loadOffer979
+  console.log('items.template:', this.items.template);// select
+  console.log('items.code:', this.items.code);        // loadOffer979
+
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{}}
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919"}
+}
+```
+
+**Šta se dogodilo?**
+
+```javascript
+// value.manager.ts
+if (['radio', 'select'].indexOf(el.template) >= 0) {
+  if (model[el.name] === undefined) {
+    this.setDefaultValue(el, model);
+    // model["loadOffer979"] = "5919" (iz value.defaultValue)
+  }
+}
+
+// REZULTAT:
+db.model = {
+  auto: {},
+  FlatpaketiPOTS: {},
+  loadOffer979: "5919"  // ← DODANO! (defaultValue iz strukture)
+}
+```
+
+### KORAK 5.4: FlatBHTelecom (basic_block)
+
+**File:** `contentloader.component.ts`
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);        // FlatBHTelecom
+  console.log('items.template:', this.items.template);// basic_block
+  console.log('items.code:', this.items.code);        // 5919
+
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919"}
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":null}
+}
+```
+
+**File:** `basicblock.component.ts`
+
+```typescript
+ngOnInit() {
+  console.log('=== BasicBlock ngOnInit ===');
+  console.log('items.name:', this.items.name);    // FlatBHTelecom
+  console.log('items.label:', this.items.label);  // "Flat BH Telecom"
+  console.log('items.code:', this.items.code);    // 5919
+
+  console.log('model PRIJE kreiranja:', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":null}
+
+  if (!this.model[this.items.name]) {
+    this.model[this.items.name] = {};
+  }
+
+  console.log('model NAKON kreiranja:', JSON.stringify(this.model));
+  // {"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":{}}
+
+  console.log('Kreiran nested objekat: model["FlatBHTelecom"] = {}');
+}
+```
+
+**Rezultat:**
+
+```javascript
+db.model = {
+  auto: {},
+  FlatpaketiPOTS: {},
+  loadOffer979: "5919",
+  FlatBHTelecom: {}  // ← NESTED OBJEKAT KREIRAN!
+}
+```
+
+### KORAK 5.5: FIRSTNAME (input) - PRVI atribut
+
+**VAŽNO:** Od sada model = `db.model.FlatBHTelecom` (nested objekat)!
+
+**File:** `contentloader.component.ts`
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);        // FIRSTNAME
+  console.log('items.template:', this.items.template);// input
+  console.log('items.code:', this.items.code);        // FIRSTNAME
+
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {}  ← OVO JE db.model.FlatBHTelecom (nested), NE db.model!
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null}
+}
+```
+
+**Šta se dogodilo?**
+
+```javascript
+// value.manager.ts
+if (model[el.name] === undefined) {
+  // Prvo pokuša generationFormula
+  this.generate(el, el.value.generationFormula, model, parameters);
+  // generationFormula = "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual"
+
+  // API poziv ka backendu:
+  // /uomback/common/lookupStatement
+  // params: { method: "select uomcommon.fgetFirstLastname('ANALOG',130025794,'FIRSTNAME') from dual" }
+
+  // Backend vraća: "Adnan"
+  // model["FIRSTNAME"] = "Adnan"
+}
+
+// AKO generationFormula NE postoji ili backend NE vrati vrijednost:
+if (model[el.name] === undefined) {
+  this.setDefaultValue(el, model);
+  // model["FIRSTNAME"] = null
+}
+```
+
+**Rezultat:**
+
+```javascript
+db.model.FlatBHTelecom = {
+  FIRSTNAME: null  // ← DODANO! (ili "Adnan" ako backend vrati)
+}
+
+// Kompletan db.model:
+db.model = {
+  auto: {},
+  FlatpaketiPOTS: {},
+  loadOffer979: "5919",
+  FlatBHTelecom: {
+    FIRSTNAME: null  // ← DODANO OVDJE!
+  }
+}
+```
+
+### KORAK 5.6: NAME (input) - DRUGI atribut
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);  // NAME
+
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null}  ← db.model.FlatBHTelecom
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null,"NAME":null}
+}
+```
+
+**Rezultat:**
+
+```javascript
+db.model.FlatBHTelecom = {
+  FIRSTNAME: null,
+  NAME: null  // ← DODANO!
+}
+```
+
+### KORAK 5.7: JOBTITLE (select) - TREĆI atribut
+
+```typescript
+ngOnInit() {
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null,"NAME":null}
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null,"NAME":null,"JOBTITLE":null}
+}
+```
+
+**Rezultat:**
+
+```javascript
+db.model.FlatBHTelecom = {
+  FIRSTNAME: null,
+  NAME: null,
+  JOBTITLE: null  // ← DODANO!
+}
+```
+
+### KORAK 5.8: Preuzimanja (default_block) - CHILD nested objekat
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);        // Preuzimanja
+  console.log('items.template:', this.items.template);// default_block
+  console.log('items.code:', this.items.code);        // 164
+
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null,"NAME":null,"JOBTITLE":null,...}
+
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+  // {"FIRSTNAME":null,"NAME":null,"JOBTITLE":null,...,"Preuzimanja":null}
+}
+```
+
+**DefaultBlock kreira nested:**
+
+```typescript
+if (!this.model[this.items.name]) {
+  this.model[this.items.name] = {};  // model["Preuzimanja"] = {}
+}
+```
+
+**Rezultat:**
+
+```javascript
+db.model.FlatBHTelecom = {
+  FIRSTNAME: null,
+  NAME: null,
+  JOBTITLE: null,
+  PRIKLJUCAK_ADSL: null,
+  ACTION_PNK: null,
+  FRSEGSCLASS_CODE: null,
+  PUSER_EMAIL: null,
+  DEFAULTCONTACTPHONE: null,
+  OFFER_NAME: null,
+  DEFAULTCONTACTEMAIL: null,
+  PQUANTITY_NUM: null,
+  CCC_IND: null,
+  Preuzimanja: {},  // ← NESTED OBJEKAT!
+  Tarifnipaketi: {} // ← NESTED OBJEKAT!
+}
+```
+
+---
+
+## KORAK 6: db.model nakon kompletnog renderovanja
+
+```javascript
+db.model = {
+  auto: {},
+
+  FlatpaketiPOTS: {},
+
+  loadOffer979: "5919",
+
+  FlatBHTelecom: {
+    // ATRIBUTI (inputs)
+    FIRSTNAME: null,
+    NAME: null,
+    JOBTITLE: null,
+    PRIKLJUCAK_ADSL: null,
+    ACTION_PNK: null,
+    FRSEGSCLASS_CODE: null,
+    PUSER_EMAIL: null,
+    DEFAULTCONTACTPHONE: null,
+    OFFER_NAME: null,
+    DEFAULTCONTACTEMAIL: null,
+    PQUANTITY_NUM: null,
+    CCC_IND: null,
+
+    // CHILDREN (nested blocks)
+    Preuzimanja: {},
+    Tarifnipaketi: {},
+    Dodatneuslugetehnicke: {},
+    Promjene: {},
+    Fiksnaugovorniodnos: {}
+  }
+}
+```
+
+**Ključno:**
+- Svi atributi su `null` (ili vrijednost iz generationFormula ako backend vrati)
+- Nested blokovi su `{}` (prazni objekti)
+- Struktura je KOMPLETNA - sve što backend šalje je "izgrađeno"
+
+---
+
+## KORAK 7: Korisnik unosi podatke
+
+**File:** `z-input.template.html`
+
+```html
+<input
+  [(ngModel)]="model[items.name]"
+             ~~~~~~~~~~~~~~~~~~~
+                    │
+                    └─→ TWO-WAY DATA BINDING!
+  [placeholder]="items.label">
+```
+
+### Kako [(ngModel)] radi?
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  KORISNIK UPISUJE U INPUT POLJE:                         │
+│  ────────────────────────────────────────────────────    │
+│  <input [(ngModel)]="model['FIRSTNAME']">                │
+│         │                                                 │
+│         └─→ Korisnik upisuje: "Adnan"                     │
+│                                                           │
+│  Angular AUTOMATSKI setuje:                              │
+│  model["FIRSTNAME"] = "Adnan"                             │
+│  ↓                                                        │
+│  db.model.FlatBHTelecom.FIRSTNAME = "Adnan"               │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Visualizacija:**
+
+```
+db.model.FlatBHTelecom = {
+  FIRSTNAME: null,  ← PRIJE
+  NAME: null
+}
+        │
+        ↓ Korisnik upisuje "Adnan" u FIRSTNAME input
+        ↓
+db.model.FlatBHTelecom = {
+  FIRSTNAME: "Adnan",  ← NAKON
+  NAME: null
+}
+        │
+        ↓ Korisnik upisuje "Hodžić" u NAME input
+        ↓
+db.model.FlatBHTelecom = {
+  FIRSTNAME: "Adnan",
+  NAME: "Hodžić"  ← NAKON
+}
+```
+
+---
+
+## KORAK 8: db.model nakon što korisnik popuni formu
+
+```javascript
+db.model = {
+  auto: {},
+
+  FlatpaketiPOTS: {},
+
+  loadOffer979: "5919",
+
+  FlatBHTelecom: {
+    // Korisnik je upisao:
+    FIRSTNAME: "Adnan",
+    NAME: "Hodžić",
+    JOBTITLE: "Direktor",
+    PRIKLJUCAK_ADSL: "Da",
+    ACTION_PNK: null,
+    FRSEGSCLASS_CODE: "ANALOG",
+    PUSER_EMAIL: "adnan.hodzic@example.ba",
+    DEFAULTCONTACTPHONE: "061234567",
+    OFFER_NAME: "Flat BH Telecom",
+    DEFAULTCONTACTEMAIL: "adnan.hodzic@example.ba",
+    PQUANTITY_NUM: "1",
+    CCC_IND: null,
+
+    Preuzimanja: {
+      // ... korisnik je popunio i ova polja
+    },
+
+    Tarifnipaketi: {
+      // ... korisnik je odabrao tarifni paket
+    }
+  }
+}
+```
+
+**Ključno:**
+db.model sada sadrži SVE podatke koje je korisnik upisao!
+
+---
+
+## KORAK 9: saveSuicapture() - Slanje db.model na backend
+
+**File:** `evidencija-usluge.component.ts`
+
+```typescript
+saveSuicapture() {
+  console.log('--- saveSuicapture() ---');
+  console.log('db.model PRIJE JSON.stringify:', this.db.model);
+
+  let jsonSetup = {
+    model: JSON.stringify({
+      model: this.db.model,
+      output: this.setOutput()
+    })
+  };
+
+  console.log('jsonSetup.model:', jsonSetup.model);
+
+  this.api.post('/uomback/suicapture/savesuicapture', jsonSetup).subscribe((response) => {
+    console.log('suicapture saved, response:', response);
+  });
+}
+```
+
+### Stvarni JSON koji se šalje:
+
+```javascript
+jsonSetup = {
+  model: '{"model":{"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":{"FIRSTNAME":"Adnan","NAME":"Hodžić","JOBTITLE":"Direktor","PRIKLJUCAK_ADSL":"Da","FRSEGSCLASS_CODE":"ANALOG","PUSER_EMAIL":"adnan.hodzic@example.ba","DEFAULTCONTACTPHONE":"061234567","OFFER_NAME":"Flat BH Telecom","DEFAULTCONTACTEMAIL":"adnan.hodzic@example.ba","PQUANTITY_NUM":"1","Preuzimanja":{},"Tarifnipaketi":{}}},"output":{...}}'
+}
+```
+
+### Visualizacija:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  FRONTEND (Angular)                                      │
+│  ──────────────────────────────────────────────────────  │
+│  db.model = {                                            │
+│    auto: {},                                             │
+│    FlatpaketiPOTS: {},                                   │
+│    loadOffer979: "5919",                                 │
+│    FlatBHTelecom: {                                      │
+│      FIRSTNAME: "Adnan",                                 │
+│      NAME: "Hodžić",                                     │
+│      JOBTITLE: "Direktor"                                │
+│    }                                                     │
+│  }                                                       │
+│          │                                               │
+│          ↓ JSON.stringify()                              │
+│          │                                               │
+│  jsonSetup.model = '{"model":{"auto":{},"FlatBHTelecom"  │
+│                     :{"FIRSTNAME":"Adnan",...}}}'        │
+│          │                                               │
+│          ↓ HTTP POST                                     │
+└──────────┼──────────────────────────────────────────────┘
+           │
+           ↓
+┌──────────┼──────────────────────────────────────────────┐
+│  BACKEND (Spring Boot)                                   │
+│  ──────────────────────────────────────────────────────  │
+│          ↓                                               │
+│  @PostMapping("/uomback/suicapture/savesuicapture")      │
+│  public void savesuicapture(String model) {              │
+│    // Sprema JSON string u bazu                          │
+│    database.save(model);                                 │
+│  }                                                       │
+│                                                          │
+│  Database:                                               │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │ ORDER_ID │ TYPE │ SUICAPTURE                       │ │
+│  ├──────────┼──────┼──────────────────────────────────┤ │
+│  │ 123456   │ 100  │ '{"model":{"auto":{},            │ │
+│  │          │      │  "FlatBHTelecom":{"FIRSTNAME":   │ │
+│  │          │      │  "Adnan","NAME":"Hodžić"...}}'   │ │
+│  └────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Analogija:**
+Fotograf (saveSuicapture) snima trenutno stanje kuće (db.model) i sprema fotografiju (JSON string) u arhivu (database)!
+
+---
+
+## KORAK 10: loadDynamicData() - Učitavanje iz suicapture
+
+**File:** `evidencija-usluge.component.ts`
+
+```typescript
+loadDynamicData() {
+  console.log('--- loadDynamicData() ---');
+
+  this.api.get('/uomback/suicapture/getsuicapture', {
+    params: {
+      orderId: this.orderId,    // 123456
+      type: this.processId      // 100
+    }
+  }).subscribe((response) => {
+    console.log('suicapture stigao sa backenda:', response);
+
+    let data = JSON.parse(response.suicapture.model);
+    console.log('data.model:', data.model);
+    console.log('db.model PRIJE Object.assign:', this.db.model);
+
+    Object.assign(this.db.model, data.model);
+    console.log('db.model NAKON Object.assign:', this.db.model);
+  });
+}
+```
+
+### Kako JSON.parse() i Object.assign() rade zajedno?
+
+```javascript
+// 1. Backend vraća JSON string:
+response.suicapture.model = '{"model":{"auto":{},"FlatpaketiPOTS":{},"loadOffer979":"5919","FlatBHTelecom":{"FIRSTNAME":"Adnan","NAME":"Hodžić"}},"output":{...}}'
+
+// 2. JSON.parse() konvertuje string → objekat:
+data = JSON.parse(response.suicapture.model)
+// data = {
+//   model: {
+//     auto: {},
+//     FlatpaketiPOTS: {},
+//     loadOffer979: "5919",
+//     FlatBHTelecom: {
+//       FIRSTNAME: "Adnan",
+//       NAME: "Hodžić",
+//       JOBTITLE: "Direktor"
+//     }
+//   },
+//   output: {...}
+// }
+
+// 3. Object.assign() kopira sve properties iz data.model u db.model:
+Object.assign(db.model, data.model)
+//           └────────┘  └─────────┘
+//                │           │
+//            DESTINACIJA   IZVOR
+//
+// db.model = {
+//   auto: {},
+//   FlatpaketiPOTS: {},
+//   loadOffer979: "5919",
+//   FlatBHTelecom: {
+//     FIRSTNAME: "Adnan",
+//     NAME: "Hodžić",
+//     JOBTITLE: "Direktor"
+//   }
+// }
+```
+
+### Visualizacija:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  BACKEND (Database)                                      │
+│  ──────────────────────────────────────────────────────  │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │ ORDER_ID │ TYPE │ SUICAPTURE                       │ │
+│  ├──────────┼──────┼──────────────────────────────────┤ │
+│  │ 123456   │ 100  │ '{"model":{"auto":{},            │ │
+│  │          │      │  "FlatBHTelecom":{"FIRSTNAME":   │ │
+│  │          │      │  "Adnan","NAME":"Hodžić"...}}'   │ │
+│  └────────────────────────────────────────────────────┘ │
+│          │                                               │
+│          ↓ HTTP GET                                      │
+└──────────┼──────────────────────────────────────────────┘
+           │
+           ↓
+┌──────────┼──────────────────────────────────────────────┐
+│  FRONTEND (Angular)                                      │
+│  ──────────────────────────────────────────────────────  │
+│          ↓                                               │
+│  response.suicapture.model = '{"model":{"auto":{},...}}' │
+│          │                                               │
+│          ↓ JSON.parse()                                  │
+│          │                                               │
+│  data.model = {                                          │
+│    auto: {},                                             │
+│    FlatpaketiPOTS: {},                                   │
+│    loadOffer979: "5919",                                 │
+│    FlatBHTelecom: {                                      │
+│      FIRSTNAME: "Adnan",                                 │
+│      NAME: "Hodžić",                                     │
+│      JOBTITLE: "Direktor"                                │
+│    }                                                     │
+│  }                                                       │
+│          │                                               │
+│          ↓ Object.assign(db.model, data.model)           │
+│          │                                               │
+│  db.model = {                                            │
+│    auto: {},                                             │
+│    FlatpaketiPOTS: {},                                   │
+│    loadOffer979: "5919",                                 │
+│    FlatBHTelecom: {                                      │
+│      FIRSTNAME: "Adnan",  ← Svi podaci vraćeni!          │
+│      NAME: "Hodžić",                                     │
+│      JOBTITLE: "Direktor"                                │
+│    }                                                     │
+│  }                                                       │
+│          │                                               │
+│          ↓ Angular automatski renderuje formu!           │
+│          │                                               │
+│  <input [(ngModel)]="db.model.FlatBHTelecom.FIRSTNAME">  │
+│         │                                                │
+│         └─→ Prikazuje "Adnan"                            │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Analogija:**
+Fotograf (loadDynamicData) uzima fotografiju iz arhive (database), obnavljа kuću (db.model) tačno onako kako je bila, i stanari (korisnici) opet vide svoje stvari na mjestima gdje su ih ostavili!
+
+---
+
+## 📊 KOMPLETNA VIZUALIZACIJA LIFECYCLE-a SA STVARNIM PODACIMA
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. INICIJALIZACIJA                                             │
+│  ───────────────────────────────────────────────────────────────│
+│  constructor() { db injektovan }                                │
+│  assignObjects() → db.model = { auto: {} }                      │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  2. DOHVAT STRUKTURE                                            │
+│  ───────────────────────────────────────────────────────────────│
+│  getDynamic(100) → Backend šalje:                               │
+│    - FlatpaketiPOTS (default_block, 979)                        │
+│    - loadOffer979 (select, defaultValue: "5919")                │
+│    - FlatBHTelecom (basic_block, 5919)                          │
+│      - FIRSTNAME, NAME, JOBTITLE... (inputs)                    │
+│      - Preuzimanja, Tarifnipaketi... (children)                 │
+│  db.setmod('new') → db.mod = 'new'                              │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  3. RENDERING FORME                                             │
+│  ───────────────────────────────────────────────────────────────│
+│  <z-pageloader [model]="db.model"> ← REFERENCA!                 │
+│    └→ <z-contentloader [model]="db.model"> ← ISTA REFERENCA!    │
+│         └→ ValueManager.set() dodaje properties u db.model      │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  4. POPUNJAVANJE db.model-a KORAK-PO-KORAK                      │
+│  ───────────────────────────────────────────────────────────────│
+│  4.1: FlatpaketiPOTS                                            │
+│       db.model = { auto: {}, FlatpaketiPOTS: null }             │
+│       DefaultBlock: db.model.FlatpaketiPOTS = {}                │
+│                                                                 │
+│  4.2: loadOffer979                                              │
+│       db.model.loadOffer979 = "5919"                            │
+│                                                                 │
+│  4.3: FlatBHTelecom                                             │
+│       db.model.FlatBHTelecom = null                             │
+│       BasicBlock: db.model.FlatBHTelecom = {}                   │
+│                                                                 │
+│  4.4: FIRSTNAME (u FlatBHTelecom)                               │
+│       db.model.FlatBHTelecom.FIRSTNAME = null                   │
+│                                                                 │
+│  4.5: NAME (u FlatBHTelecom)                                    │
+│       db.model.FlatBHTelecom.NAME = null                        │
+│                                                                 │
+│  4.6: JOBTITLE, PRIKLJUCAK_ADSL... (ostali atributi)            │
+│  4.7: Preuzimanja, Tarifnipaketi... (children nested)           │
+│                                                                 │
+│  REZULTAT: db.model = {                                         │
+│    auto: {},                                                    │
+│    FlatpaketiPOTS: {},                                          │
+│    loadOffer979: "5919",                                        │
+│    FlatBHTelecom: {                                             │
+│      FIRSTNAME: null, NAME: null, JOBTITLE: null, ...           │
+│      Preuzimanja: {}, Tarifnipaketi: {}, ...                    │
+│    }                                                            │
+│  }                                                              │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  5. KORISNIK UNOSI PODATKE                                      │
+│  ───────────────────────────────────────────────────────────────│
+│  <input [(ngModel)]="db.model.FlatBHTelecom.FIRSTNAME">         │
+│  Korisnik upisuje: "Adnan" → db.model.FlatBHTelecom.FIRSTNAME   │
+│                              = "Adnan"                          │
+│  <input [(ngModel)]="db.model.FlatBHTelecom.NAME">              │
+│  Korisnik upisuje: "Hodžić" → db.model.FlatBHTelecom.NAME       │
+│                               = "Hodžić"                        │
+│  ... user fills all fields                                      │
+│                                                                 │
+│  REZULTAT: db.model = {                                         │
+│    auto: {},                                                    │
+│    FlatpaketiPOTS: {},                                          │
+│    loadOffer979: "5919",                                        │
+│    FlatBHTelecom: {                                             │
+│      FIRSTNAME: "Adnan", NAME: "Hodžić", JOBTITLE: "Direktor"...│
+│    }                                                            │
+│  }                                                              │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  6. SPREMANJE (saveSuicapture)                                  │
+│  ───────────────────────────────────────────────────────────────│
+│  JSON.stringify({ model: db.model, output: ... })               │
+│  → '{"model":{"auto":{},"FlatBHTelecom":{"FIRSTNAME":"Adnan"... │
+│  HTTP POST → Backend sprema u database                          │
+│                                                                 │
+│  Database:                                                      │
+│  ┌──────────┬──────┬─────────────────────────────────────────┐ │
+│  │ ORDER_ID │ TYPE │ SUICAPTURE                              │ │
+│  ├──────────┼──────┼─────────────────────────────────────────┤ │
+│  │ 123456   │ 100  │ '{"model":{"auto":{},"FlatBHTelecom":   │ │
+│  │          │      │  {"FIRSTNAME":"Adnan","NAME":"Hodžić"...│ │
+│  └──────────┴──────┴─────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  7. UČITAVANJE (loadDynamicData)                                │
+│  ───────────────────────────────────────────────────────────────│
+│  HTTP GET → Backend vraća JSON string                           │
+│  JSON.parse() → data.model = { auto: {}, FlatBHTelecom: {...} } │
+│  Object.assign(db.model, data.model) → Obnovi db.model          │
+│  Angular automatski renderuje formu sa učitanim podacima!       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ⚡ Ključne tačke za zapamtiti:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. db je SINGLETON SERVICE                                     │
+│     → Postoji samo JEDNA INSTANCA u aplikaciji                  │
+│     → Sve komponente dijele ISTI db.model objekat               │
+│                                                                 │
+│  2. [model]="db.model" je REFERENCA, NE KOPIJA                  │
+│     → Promjene u jednoj komponenti → vide se SVUGDJE            │
+│     → ValueManager.set() DIREKTNO dodaje properties u db.model  │
+│                                                                 │
+│  3. assignObjects() RESETUJE db.model na { auto: {} }           │
+│     → Brisanje starih podataka prije nove forme                 │
+│                                                                 │
+│  4. ValueManager.set() se poziva za SVAKI element               │
+│     → Dodaje properties: db.model.FlatBHTelecom.FIRSTNAME=null  │
+│     → Iterira kroz SVE elemente strukture                       │
+│                                                                 │
+│  5. BasicBlock i DefaultBlock kreiraju NESTED objekte           │
+│     → db.model.FlatBHTelecom = {}                               │
+│     → Svi inputs idu UNUTAR nested objekta                      │
+│                                                                 │
+│  6. [(ngModel)] omogućava TWO-WAY DATA BINDING                  │
+│     → Korisnik upisuje → db.model se mijenja                    │
+│     → db.model se mijenja → input polje se ažurira              │
+│                                                                 │
+│  7. saveSuicapture() konvertuje db.model → JSON string          │
+│     → JSON.stringify({ model: db.model, output: ... })          │
+│     → Šalje backend-u koji sprema u database                    │
+│                                                                 │
+│  8. loadDynamicData() obnavlja db.model iz database             │
+│     → Backend vraća JSON string                                 │
+│     → JSON.parse() → objekat                                    │
+│     → Object.assign(db.model, data.model) → obnovi db.model     │
+│     → Angular automatski renderuje formu!                       │
+│                                                                 │
+│  9. generationFormula dohvata podatke iz baze                   │
+│     → "select uomcommon.fgetFirstLastname(...,'FIRSTNAME')..."  │
+│     → API poziv: /uomback/common/lookupStatement                │
+│     → Backend vraća "Adnan" → db.model.FlatBHTelecom.FIRSTNAME  │
+│                             = "Adnan"                           │
+│                                                                 │
+│  10. db.mod kontroliše ponašanje ValueManager.set()             │
+│      → 'disabled' / 'preview' → PRESKOČI API pozive             │
+│      → 'new' / 'edit' → IZVRŠI API pozive                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🎯 Praktični primjer - FIRSTNAME field kroz cijeli lifecycle
+
+Hajde da pratimo **FIRSTNAME** field kroz cijeli lifecycle sa STVARNIM podacima:
+
+### 1. assignObjects()
+```javascript
+db.model = { auto: {} }  // FIRSTNAME ne postoji
+```
+
+### 2. getDynamic() - struktura stiže
+```javascript
+structure.structure.elements[0].elements[0].inputs[0] = {
+  name: "FIRSTNAME",
+  label: "Ime",
+  code: "FIRSTNAME",
+  template: "input",
+  elementType: "text",
+  value: {
+    generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual"
+  }
+}
+```
+
+### 3. Template rendering
+```html
+<z-pageloader [model]="db.model">
+  <z-contentloader [model]="db.model">
+    <!-- FIRSTNAME input će biti renderovan OVDJE -->
+  </z-contentloader>
+</z-pageloader>
+```
+
+### 4. BasicBlock kreira nested objekat
+```javascript
+// basicblock.component.ts
+if (!this.model["FlatBHTelecom"]) {
+  this.model["FlatBHTelecom"] = {};
+}
+
+// db.model = { auto: {}, FlatpaketiPOTS: {}, loadOffer979: "5919", FlatBHTelecom: {} }
+```
+
+### 5. ValueManager.set() za FIRSTNAME
+```javascript
+// contentloader.component.ts
+this.ValueManager.set(
+  { name: "FIRSTNAME", value: { generationFormula: "select..." } },
+  db.model.FlatBHTelecom  // ← model = nested objekat!
+);
+
+// value.manager.ts
+if (model["FIRSTNAME"] === undefined) {
+  // Pozovi generationFormula
+  this.generate(el, el.value.generationFormula, model, parameters);
+
+  // API poziv:
+  // POST /uomback/common/lookupStatement
+  // params: { method: "select uomcommon.fgetFirstLastname('ANALOG',130025794,'FIRSTNAME') from dual" }
+
+  // Backend vraća: "Adnan"
+  model["FIRSTNAME"] = "Adnan";
+}
+
+// NAKON ValueManager.set():
+db.model.FlatBHTelecom = {
+  FIRSTNAME: "Adnan"  // ← DODANO iz generationFormula!
+}
+```
+
+### 6. Input field se renderuje
+```html
+<input
+  [(ngModel)]="db.model.FlatBHTelecom.FIRSTNAME"
+  placeholder="Ime">
+
+<!-- Prikazuje: "Adnan" -->
+```
+
+### 7. Korisnik mijenja vrijednost
+```javascript
+// Korisnik briše "Adnan" i upisuje "Kenan"
+// Angular automatski setuje:
+db.model.FlatBHTelecom.FIRSTNAME = "Kenan"
+
+// db.model = {
+//   ...
+//   FlatBHTelecom: {
+//     FIRSTNAME: "Kenan"  // ← PROMIJENJENO!
+//   }
+// }
+```
+
+### 8. saveSuicapture()
+```javascript
+let jsonSetup = {
+  model: JSON.stringify({
+    model: {
+      auto: {},
+      FlatpaketiPOTS: {},
+      loadOffer979: "5919",
+      FlatBHTelecom: {
+        FIRSTNAME: "Kenan"  // ← Šalje se na backend
+      }
+    },
+    output: {...}
+  })
+};
+
+// HTTP POST /uomback/suicapture/savesuicapture
+// Backend sprema: '{"model":{..."FIRSTNAME":"Kenan"...}}'
+```
+
+### 9. loadDynamicData()
+```javascript
+// HTTP GET /uomback/suicapture/getsuicapture
+// Backend vraća: '{"model":{..."FIRSTNAME":"Kenan"...}}'
+
+let data = JSON.parse(response.suicapture.model);
+// data.model.FlatBHTelecom.FIRSTNAME = "Kenan"
+
+Object.assign(db.model, data.model);
+// db.model.FlatBHTelecom.FIRSTNAME = "Kenan"
+
+// Input field prikazuje:
+<input [(ngModel)]="db.model.FlatBHTelecom.FIRSTNAME">
+       └─→ Prikazuje "Kenan"!
+```
+
+---
+
+## 🔍 Česta pitanja (FAQ)
+
+### Q1: Zašto atributi (FIRSTNAME, NAME...) idu u db.model.FlatBHTelecom, a ne direktno u db.model?
+
+**Odgovor:**
+Zato što BasicBlock kreira **nested objekat**!
+
+```javascript
+// BasicBlock ngOnInit():
+if (!this.model[this.items.name]) {  // this.items.name = "FlatBHTelecom"
+  this.model[this.items.name] = {};  // this.model["FlatBHTelecom"] = {}
+}
+
+// Zatim BasicBlock renderuje svoje inputs UNUTAR nested objekta:
+<z-contentloader
+  *ngFor="let item of items.inputs"
+  [model]="model[items.name]"
+          ~~~~~~~~~~~~~~~~~~~
+               │
+               └─→ model["FlatBHTelecom"] = db.model.FlatBHTelecom
+  [items]="item">
+</z-contentloader>
+
+// Rezultat:
+// db.model.FlatBHTelecom.FIRSTNAME
+// db.model.FlatBHTelecom.NAME
+// ...
+```
+
+**Zašto je ovo korisno?**
+- Organizacija: Svi podaci za "Flat BH Telecom" ponudu su grupisani zajedno
+- Hijerarhija: Omogućava nested strukture (Preuzimanja, Tarifnipaketi...)
+- Backend razumije: Backend očekuje ovaj format
+
+### Q2: Šta ako generationFormula NE vrati vrijednost?
+
+**Odgovor:**
+ValueManager.set() će postaviti `null`:
+
+```javascript
+// value.manager.ts
+this.generate(el, el.value.generationFormula, model, parameters);
+// Ako backend vrati null ili error:
+
+if (model[el.name] === undefined) {
+  this.setDefaultValue(el, model);
+  // model["FIRSTNAME"] = null
+}
+```
+
+### Q3: Kako se loadOffer979 = "5919" postavlja?
+
+**Odgovor:**
+Kroz `value.defaultValue`:
+
+```javascript
+// Struktura koja stiže sa backenda:
+{
+  name: "loadOffer979",
+  template: "select",
+  value: {
+    defaultValue: "5919",  // ← OVDJE!
+    data: [
+      { value: "5919", name: "Flat BH Telecom" }
+    ]
+  }
+}
+
+// ValueManager.set():
+if (['select'].indexOf(el.template) >= 0) {
+  if (model[el.name] === undefined) {
+    this.setDefaultValue(el, model);
+    // model["loadOffer979"] = "5919"
+  }
+}
+```
+
+### Q4: Šta je razlika između db.model i db.output?
+
+**Odgovor:**
+
+```javascript
+// db.model - PODACI koje korisnik unosi
+db.model = {
+  FlatBHTelecom: {
+    FIRSTNAME: "Adnan",
+    NAME: "Hodžić"
+  }
+}
+
+// db.output - METADATA o svakom polju
+db.output = {
+  FIRSTNAME: {
+    name: "FIRSTNAME",
+    label: "Ime",
+    code: "FIRSTNAME",
+    template: "input",
+    value: db.model.FlatBHTelecom,  // ← REFERENCA na model!
+    attr: {},
+    items: {},
+    spec: {}
+  },
+  NAME: {
+    name: "NAME",
+    label: "Prezime/Naziv",
+    value: db.model.FlatBHTelecom,  // ← ISTA REFERENCA!
+    ...
+  }
+}
+
+// saveSuicapture() šalje OBA:
+JSON.stringify({
+  model: db.model,    // ← PODACI
+  output: db.output   // ← METADATA
+})
+```
+
+---
+
+*Ažurirano: 2026-02-09*
+*Dodatak 3: db.model Lifecycle sa stvarnim podacima iz sistema (FlatpaketiPOTS → FlatBHTelecom → FIRSTNAME...)*
 *Korak 3B: getDynamic() - Dohvatanje strukture forme*
