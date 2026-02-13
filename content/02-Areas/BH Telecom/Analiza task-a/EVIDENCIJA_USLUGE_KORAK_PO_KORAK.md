@@ -6,6 +6,7 @@ Kompletna analiza `evidencija-usluge.component.ts` i `evidencija-usluge.template
 
 - [DODATAK: db.model Lifecycle - Od inicijalizacije do suicapture](#dodatak-dbmodel-lifecycle---od-inicijalizacije-do-suicapture)
 - [DODATAK: db.setoutput() - Kreiranje Output Strukture](#dodatak-dbsetoutput---kreiranje-output-strukture)
+- [DODATAK: JSON Struktura order-entry.md - Kompletan tok kroz z-contentloader](#dodatak-json-struktura-order-entrymd---kompletan-tok-kroz-z-contentloader)
 
 ---
 
@@ -11383,4 +11384,1640 @@ JSON.stringify({
 *Ažurirano: 2026-02-09*
 *Dodatak 3: db.model Lifecycle sa stvarnim podacima iz sistema (FlatpaketiPOTS → FlatBHTelecom → FIRSTNAME...)*
 *Dodatak 4: db.setoutput() - Kreiranje Output Strukture sa detaljnim objašnjenjem triple assignment-a*
+*Dodatak 5: JSON Struktura order-entry.md - Kompletan tok od JSON-a kroz z-contentloader do db.model i suicapture*
 *Korak 3B: getDynamic() - Dohvatanje strukture forme*
+
+---
+
+## DODATAK: JSON Struktura order-entry.md - Kompletan tok kroz z-contentloader
+
+**File reference:** `/mnt/c/Users/kenansa/Documents/projects/frontend/verifikacija-popup/uom-frontend/order-entry.md`
+
+---
+
+### 📋 PREGLED: Šta je order-entry.md?
+
+**order-entry.md** je JSON fajl koji sadrži **kompletnu hijerarhijsku strukturu** forme za kreiranje order-a. Ovaj fajl služi kao **"arhitektonski plan"** koji definiše:
+- Koje blokove (SPECIFICATION) treba prikazati
+- Koje ponude (OFFER) su dostupne
+- Koje inpute (ATTRIBUTE) korisnik treba popuniti
+- Kako su elementi ugnjezdeni jedni u druge
+
+---
+
+### 🎯 ANALOGIJA: Zgrada sa spratovima i apartmanima
+
+Zamislite **order-entry.md** kao **arhitektonski plan kompleksne zgrade**:
+
+| JSON Element | Analogija | Vizuelni prikaz |
+|--------------|-----------|-----------------|
+| **SPECIFICATION** | **Zgrada/Sprat** | Veliki plavi blok |
+| **OFFER** | **Apartman unutar zgrade** | Manji zeleni blok |
+| **ATTRIBUTE** | **Soba unutar apartmana** | Input polje |
+| **children** | **Dodatni sprat u zgradi** | Ugnjezdena struktura |
+| **elements** | **Apartmani na spratu** | Lista OFFER-a |
+| **inputs** | **Sobe u apartmanu** | Lista input polja |
+| **actions** | **Interfon za biranje** | Dropdown za izbor |
+
+**Ključna karakteristika:** Struktura je **REKURZIVNA** - apartman može sadržavati dodatne spratove, koji opet sadrže apartmane, koji opet mogu sadržavati spratove... 🔄
+
+---
+
+### 📊 HIJERARHIJA STRUKTURE: Stvarni primjer iz order-entry.md
+
+```
+Level 1: FlatpaketiPOTS (SPECIFICATION, code: "979", template: "default_block")
+  │
+  ├─ inputs: []                    ← Prazno (nema direktnih inputa na SPECIFICATION)
+  │
+  ├─ actions: [                    ← Akcije (dropdown-i za izbor)
+  │    └─ loadOffer979 (template: "select", defaultValue: "5919")
+  │  ]
+  │
+  ├─ elements: [                   ← OFFER-i koji pripadaju ovoj SPECIFICATION
+  │    │
+  │    └─ Level 2: FlatBHTelecom (OFFER, code: "5919", template: "basic_block")
+  │         │
+  │         ├─ inputs: [           ← Atributi (input polja)
+  │         │    ├─ FIRSTNAME (template: "input", generationFormula: "select...")
+  │         │    ├─ NAME (template: "input", mandatory: true)
+  │         │    ├─ JOBTITLE (template: "select", lookupStatement: "select...")
+  │         │    └─ ...
+  │         │  ]
+  │         │
+  │         ├─ actions: []         ← Prazno
+  │         │
+  │         └─ children: [         ← UGNJEZDENE SPECIFICATION! (rekurzija)
+  │              │
+  │              └─ Level 3: Preuzimanja (SPECIFICATION, code: "164")
+  │                   │
+  │                   ├─ actions: [loadOffer164]
+  │                   │
+  │                   └─ elements: [
+  │                        │
+  │                        └─ Level 4: OtkazivanjeISDNBRA... (OFFER, code: "6481")
+  │                             │
+  │                             └─ inputs: [
+  │                                  ├─ TAKEOVERUSERIDBRA
+  │                                  └─ TAKEOVERAREA_CODE
+  │                                ]
+  │                   ]
+  │         ]
+  └─ children: []
+```
+
+**Ključno zapažanje:**
+- **SPECIFICATION** može imati `elements` (liste OFFER-a)
+- **OFFER** može imati `children` (ugnjezdene SPECIFICATION)
+- **children** → **elements** → **children** → **elements** → ... (beskonačna rekurzija! 🔄)
+
+---
+
+### 🚀 FAZA 1: Učitavanje JSON strukture
+
+#### Početak: Backend vraća strukturu
+
+**File:** `evidencija-usluge.component.ts` (~linija 100-150)
+
+```typescript
+// Kada se otvori order (klik na red u tabeli)
+this.db.getStructure(this.dataItem.offerId).subscribe((response) => {
+  this.items = response.structure;
+  // items = [
+  //   { name: "FlatpaketiPOTS", template: "default_block", elements: [...], children: [...] }
+  // ]
+});
+```
+
+**Šta se dešava:**
+1. **Backend poziv**: `db.getStructure(offerId)` šalje API request
+2. **Backend vraća JSON**: Kompleksna hijerarhijska struktura (kao order-entry.md)
+3. **this.items postaje root nivo**: Lista SPECIFICATION blokova
+
+**Analogija:**
+- Backend = **Arhitektonska firma** koja šalje planu zgrade
+- `this.items` = **Lista zgrada** koje treba izgraditi
+- Svaka zgrada ima svoj **blueprint** (elements, children, inputs...)
+
+**Stvarni podaci:**
+```javascript
+this.items = [
+  {
+    label: "Flat paketi POTS",
+    code: "979",
+    name: "FlatpaketiPOTS",
+    template: "default_block",
+    businessClassification: "SPECIFICATION",
+    parameters: {
+      P_OFFER_ID: "5919",
+      P_SPECIFICATION_ID: "979",
+      // ...
+    },
+    inputs: [],  // Prazno za SPECIFICATION
+    actions: [   // Dropdown za izbor ponude
+      {
+        name: "loadOffer979",
+        template: "select",
+        value: { defaultValue: "5919", data: [...] }
+      }
+    ],
+    elements: [  // Lista OFFER-a
+      {
+        name: "FlatBHTelecom",
+        code: "5919",
+        template: "basic_block",
+        inputs: [...]  // Input polja (FIRSTNAME, NAME, ...)
+      }
+    ],
+    children: []
+  }
+]
+```
+
+---
+
+### 🔄 FAZA 2: Prva iteracija *ngFor (Root nivo)
+
+#### Template iterira kroz root elemente
+
+**File:** `evidencija-usluge.template.html`
+
+```html
+<z-contentloader
+  *ngFor="let item of items"    ← items = [FlatpaketiPOTS]
+  [items]="item"                 ← item = { name: "FlatpaketiPOTS", ... }
+  [model]="model"                ← model = db.model (glavni objekat)
+  [vparent]="vparent"            ← vparent = db.valid (root validacija)
+  [valid]="valid"                ← valid = db.valid.children
+  [parameters]="parameters"      ← parameters = { P_BA_ID: "123", ... }
+  [output]="output">             ← output = db.output
+</z-contentloader>
+```
+
+**Šta se dešava:**
+
+1. **`*ngFor="let item of items"`**
+   - Angular iterira kroz `items` array
+   - U našem slučaju: **1 iteracija** (samo FlatpaketiPOTS)
+   - `item` = `{ name: "FlatpaketiPOTS", template: "default_block", ... }`
+
+2. **Kreiranje ContentLoaderComponent instance**
+   - Angular kreira **novu instancu** `ContentLoaderComponent`
+   - Prosljeđuje sve `[inputs]` toj instanci
+
+3. **Proslijeđeni podaci:**
+   ```typescript
+   // Nova ContentLoaderComponent instance prima:
+   items = {
+     name: "FlatpaketiPOTS",
+     code: "979",
+     template: "default_block",
+     businessClassification: "SPECIFICATION",
+     inputs: [],
+     actions: [loadOffer979],
+     elements: [FlatBHTelecom],
+     children: []
+   }
+   model = db.model              // Referenca na glavni model objekat!
+   vparent = db.valid            // Referenca na root validaciju
+   valid = db.valid.children     // Nested validacija
+   parameters = { P_BA_ID: "123", P_CA_ID: "456", ... }
+   output = db.output            // Referenca na output strukturu
+   ```
+
+**Analogija:**
+- `*ngFor` = **Građevinska ekipa** koja prolazi kroz listu zgrada za gradnju
+- Svaka iteracija = **Nova građevinska ekipa** dobija plan jedne zgrade
+- `items` (input) = **Blueprint** te zgrade
+- `model` (input) = **Centralni skladište materijala** (dijeli se sa svim ekipama!)
+
+**Važno:** `model`, `output`, `vparent` se **prosljeđuju po referenci**! Sve ContentLoader instance dijele **ISTI objekat**!
+
+---
+
+### ⚙️ FAZA 3: ContentLoader ngOnInit() - FlatpaketiPOTS (Root)
+
+**File:** `contentloader.component.ts` (linija 26-69)
+
+```typescript
+ngOnInit() {
+  console.log('--- ContentLoader ngOnInit ---');
+  console.log('items.name:', this.items.name);      // "FlatpaketiPOTS"
+  console.log('items.template:', this.items.template); // "default_block"
+
+  // 1️⃣ SET ACTIVITY
+  this.items.active = this.items.active != undefined ? this.items.active : true;
+  // active = true (default)
+
+  if(this.items.initActivity == undefined) {
+    this.items.initActivity = this.items.active ? true : false;
+  }
+  // initActivity = true
+
+  // 2️⃣ SET PARAMETERS (dodaje parent() funkciju)
+  this.items.set || this.setParametars();
+  // Rezultat:
+  // items.parameters = {
+  //   P_OFFER_ID: "5919",
+  //   P_SPECIFICATION_ID: "979",
+  //   parent: () => { return this.parameters }  ← NOVA funkcija!
+  // }
+
+  // 3️⃣ REGISTER DEPENDENCY
+  this.Depedency.set(this.items, this.model);
+  // Registruje "FlatpaketiPOTS" u DependencyManager
+  // Centralni registar svih komponenti i njihovih zavisnosti
+
+  // 4️⃣ CONNECT VALUEMANAGER TO DEPENDENCY
+  this.ValueManager.setDP(this.Depedency);
+  // ValueManager dobija referencu na DependencyManager
+  // Može kasnije pozvati dp.run(dname) za update zavisnih polja
+
+  // 5️⃣ SET DATABASE CONTEXT
+  this.db.set(this.model, this.parent, this.pname);
+  // db interno drži trenutni kontekst (model, parent...)
+
+  // 6️⃣ POPULATE MODEL VALUES
+  console.log('model PRIJE ValueManager.set():', JSON.stringify(this.model));
+
+  this.items.template == 'Inputoutput' ||
+    this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+  // template = "default_block" (nije "Inputoutput")
+  // → POZIVA SE ValueManager.set()!
+
+  console.log('model NAKON ValueManager.set():', JSON.stringify(this.model));
+
+  // 7️⃣ GET INDEX NAME
+  this.getIndexName();
+  // index = "FlatpaketiPOTS" (jer nije u array-u)
+
+  // 8️⃣ CREATE OUTPUT STRUCTURE
+  console.log('PRIJE setoutput - output:', this.output);
+  this.db.setoutput(this.items, this.model, this.output, this.index);
+  console.log('NAKON setoutput - output[index]:', this.output[this.index]);
+  // output["FlatpaketiPOTS"] = {
+  //   name: "FlatpaketiPOTS",
+  //   code: "979",
+  //   value: model,         // ← REFERENCA na db.model!
+  //   active: true,
+  //   calss: "SPECIFICATION",
+  //   attr: {}, items: {}, spec: {}
+  // }
+
+  // 9️⃣ SET VALIDATION
+  this.Validation.set(this.items, this.valid, this.vparent, this.index, this.db.mod);
+  // Kreira validation strukturu za FlatpaketiPOTS
+}
+```
+
+**Analogija: Građevinska ekipa priprema teren**
+
+| Korak | Akcija | Analogija |
+|-------|--------|-----------|
+| 1️⃣ SET ACTIVITY | `items.active = true` | Provjeravamo da li je zgrada aktivna za gradnju |
+| 2️⃣ SET PARAMETERS | `items.parameters.parent = () => {...}` | Dodajemo "telefon za pozivanje nadređene ekipe" |
+| 3️⃣ REGISTER DEPENDENCY | `Depedency.set()` | Registrujemo zgradu u "Centralnu evidenciju zgrada" |
+| 4️⃣ CONNECT VALUEMANAGER | `ValueManager.setDP()` | ValueManager dobija pristup evidenciji |
+| 5️⃣ SET DB CONTEXT | `db.set()` | Postavljamo trenutni kontekst (koja zgrada, koji sprat) |
+| 6️⃣ POPULATE MODEL | `ValueManager.set()` | Pokušavamo popuniti početne vrijednosti |
+| 7️⃣ GET INDEX | `getIndexName()` | Određujemo jedinstveni ID zgrade |
+| 8️⃣ CREATE OUTPUT | `db.setoutput()` | Kreiramo "informacioni katalog" o zgradi |
+| 9️⃣ SET VALIDATION | `Validation.set()` | Postavljamo pravila validacije |
+
+---
+
+### 🎨 FAZA 4: ValueManager.set() - Pokušaj popunjavanja vrijednosti (FlatpaketiPOTS)
+
+**File:** `value.manager.ts` (linija 25-33)
+
+```typescript
+public set(el: InputObject, model: any, parameters?: any, mod: string = 'new') {
+  // el = { name: "FlatpaketiPOTS", template: "default_block", ... }
+  // model = db.model
+  // parameters = { P_OFFER_ID: "5919", parent: () => {...}, ... }
+  // mod = "new"
+
+  // 1️⃣ CHECK FOR EXTERNAL API (dynamic children)
+  !el.externalAPI || ['disabled', 'preview'].indexOf(mod) >= 0 ||
+    this.setChildren(el, model, parameters);
+  // Čitaj kao: "Ako NE postoji externalAPI ILI je mod disabled/preview, preskoči setChildren"
+  // FlatpaketiPOTS: externalAPI = null → PRESKAČE SE
+
+  // 2️⃣ CHECK FOR EXTERNAL MESSAGES (validation messages)
+  !el.externalMessages || !el.externalMessages.length || ['disabled', 'preview'].indexOf(mod) >= 0 ||
+    this.setmessages(el, model, parameters);
+  // FlatpaketiPOTS: externalMessages = null → PRESKAČE SE
+
+  // 3️⃣ SET VALUE IF UNDEFINED OR RADIO/SELECT
+  if (['radio', 'select'].indexOf(el.template) >= 0 || model[el.name] === undefined) {
+    // FlatpaketiPOTS: template = "default_block" (nije radio/select)
+    // model["FlatpaketiPOTS"] = undefined → ULAZI U IF!
+
+    if (model[el.name] === undefined) {
+      // Pokušaj 1: autoincrement
+      this.autoincrement(el, model, parameters) ||
+      // Pokušaj 2: setValueByRefOrCode (mappingRef)
+      this.setValueByRefOrCode(el, model, parameters) ||
+      // Pokušaj 3: setDefaultValue (value.defaultValue)
+      this.setDefaultValue(el, model);
+
+      // FlatpaketiPOTS: value = null → SVI vraćaju false!
+      // model["FlatpaketiPOTS"] ostaje undefined
+    }
+
+    // 4️⃣ GENERATION FORMULA (SQL upit za generisanje vrijednosti)
+    !el.value || ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch ||
+      this[this.declare(el.value.generationFormula)](el, el.value.generationFormula, model, parameters, model[el.name] ? true : false);
+    // FlatpaketiPOTS: value = null → PRESKAČE SE
+
+    // 5️⃣ LOOKUP STATEMENT (SQL upit za dropdown opcije)
+    !el.value || ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch ||
+      this[this.declare(el.value.lookupStatement)](el, el.value.lookupStatement, model, parameters, model[el.name] ? true : false, true);
+    // FlatpaketiPOTS: value = null → PRESKAČE SE
+  }
+}
+```
+
+**Rezultat nakon ValueManager.set() za FlatpaketiPOTS:**
+```javascript
+db.model = {
+  FlatpaketiPOTS: undefined  // Ostalo undefined - OK! SPECIFICATION nema vrijednost
+}
+```
+
+**Zašto je ovo OK?**
+- **SPECIFICATION** je samo **organizacijski kontejner** (zgrada)
+- Ne predstavlja podatak koji korisnik unosi
+- Služi samo za grupisanje OFFER-a i drugih SPECIFICATION-a
+- Stvarne vrijednosti su u **ATTRIBUTE** elementima (FIRSTNAME, NAME, ...)
+
+**Analogija:**
+- **SPECIFICATION (FlatpaketiPOTS)** = **Zgrada** (ne pišeš ništa o zgradi, nego o apartmanima unutra)
+- **ATTRIBUTE (FIRSTNAME)** = **Soba** (ovdje pišeš "Kenan")
+
+---
+
+### 🖼️ FAZA 5: DLContent kreira komponentu - DefaultBlockComponent (FlatpaketiPOTS)
+
+**File:** `contentloader.template.html` (~linija 2-10)
+
+```html
+<!-- ContentLoader template -->
+<z-dlcontent
+  [template]="items.template"   ← "default_block"
+  [inputs]="{
+    items: items,               ← { name: 'FlatpaketiPOTS', ... }
+    model: model,               ← db.model (referenca!)
+    parent: parent,             ← undefined (root nivo)
+    pname: pname,               ← undefined
+    vparent: vparent,           ← db.valid
+    valid: valid[index] || valid,  ← db.valid.children
+    parameters: items.parameters,  ← { P_OFFER_ID: "5919", parent: () => {...} }
+    output: output[index] || output[items.name] || output  ← output["FlatpaketiPOTS"] ILI output
+  }">
+</z-dlcontent>
+```
+
+**File:** `dlcontent.ts` (linija 67-127)
+
+```typescript
+updateComponent() {
+  // 1️⃣ RESOLVE COMPONENT CLASS
+  let component: any = Components[key[this.template]];
+  // this.template = "default_block"
+  // key["default_block"] = 1
+  // Components[1] = DefaultBlockComponent  ← Iz dynamic.module.ts
+
+  console.log('--- DLContent updateComponent ---');
+  console.log('this.template:', this.template);  // "default_block"
+  console.log('component.name:', component.name);  // "DefaultBlockComponent"
+
+  // 2️⃣ CREATE COMPONENT FACTORY
+  let factory = this.cfResolver.resolveComponentFactory(component);
+  // factory = Kako napraviti DefaultBlockComponent
+
+  // 3️⃣ CREATE COMPONENT INSTANCE
+  this.cmpRef = this.target.createComponent(factory);
+  // 🔥 KREIRA NOVU INSTANCU DefaultBlockComponent-a!
+  console.log('this.cmpRef.instance.constructor.name:', this.cmpRef.instance.constructor.name);
+  // "DefaultBlockComponent"
+
+  // 4️⃣ ASSIGN INPUTS TO INSTANCE
+  Object.assign(this.cmpRef.instance, this.inputs);
+  // Prosljeđuje SVE inputs novoj instanci:
+  // instance.items = { name: "FlatpaketiPOTS", template: "default_block", ... }
+  // instance.model = db.model  ← ISTA REFERENCA!
+  // instance.output = output["FlatpaketiPOTS"]
+  // instance.parameters = { P_OFFER_ID: "5919", parent: () => {...} }
+
+  // 5️⃣ TRIGGER CHANGE DETECTION
+  this.cdRef.detectChanges();
+  // Angular renderuje DefaultBlockComponent u DOM!
+}
+```
+
+**Šta se dogodilo:**
+1. DLContent je pročitao `template = "default_block"`
+2. Mapirao ga na `DefaultBlockComponent` (iz `Components` array-a)
+3. Kreirao **novu instancu** te komponente
+4. Proslijedio joj **sve inpute** (items, model, output, parameters, ...)
+5. Angular renderovao komponentu u DOM
+
+**Analogija:**
+- **DLContent** = **Fabrika za pravljenje komponenti** (kao factory pattern)
+- **template: "default_block"** = **Šifra narudžbe** ("trebam DefaultBlock!")
+- **Components array** = **Katalog dostupnih komponenti**
+- **createComponent()** = **Proizvodnja nove instance**
+- **Object.assign()** = **Dostava materijala** (prosljeđivanje inputa)
+
+---
+
+### 🏗️ FAZA 6: DefaultBlockComponent renderuje svoje elemente (FlatpaketiPOTS)
+
+**File:** `z-default-block.template.html` (pojednostavljeno)
+
+```html
+<div class="block-wrapper">
+  <!-- Naslov bloka -->
+  <h3>{{ items.label }}</h3>  <!-- "Flat paketi POTS" -->
+
+  <!-- 1️⃣ RENDERUJ ACTIONS (loadOffer979) -->
+  <div class="actions-section">
+    <z-contentloader
+      *ngFor="let action of items.actions"     ← actions = [loadOffer979]
+      [items]="action"                          ← action = { name: "loadOffer979", template: "select", ... }
+      [model]="model"                           ← db.model (ista referenca!)
+      [parent]="model"                          ← db.model
+      [pname]="items.name"                      ← "FlatpaketiPOTS"
+      [vparent]="vparent"
+      [valid]="valid"
+      [parameters]="parameters"
+      [output]="output">
+    </z-contentloader>
+  </div>
+
+  <!-- 2️⃣ RENDERUJ ELEMENTS (FlatBHTelecom) -->
+  <div class="elements-section">
+    <z-contentloader
+      *ngFor="let element of items.elements"    ← elements = [FlatBHTelecom]
+      [items]="element"                         ← element = { name: "FlatBHTelecom", template: "basic_block", ... }
+      [model]="model"                           ← db.model (ista referenca!)
+      [parent]="model"
+      [pname]="items.name"
+      [vparent]="vparent"
+      [valid]="valid"
+      [parameters]="parameters"
+      [output]="output">
+    </z-contentloader>
+  </div>
+
+  <!-- 3️⃣ RENDERUJ CHILDREN (ugnjezdene SPECIFICATION) -->
+  <div class="children-section">
+    <z-contentloader
+      *ngFor="let child of items.children"      ← children = []  (prazno za FlatpaketiPOTS)
+      [items]="child"
+      [model]="model"
+      [parent]="model"
+      [pname]="items.name"
+      [vparent]="vparent"
+      [valid]="valid"
+      [parameters]="parameters"
+      [output]="output">
+    </z-contentloader>
+  </div>
+</div>
+```
+
+**Šta se dešava:**
+
+DefaultBlockComponent je renderovao **TRI *ngFor petlje**:
+
+1. **`*ngFor="let action of items.actions"`**
+   - Iterira kroz `actions` array
+   - Za FlatpaketiPOTS: **1 iteracija** (loadOffer979)
+   - Kreira **NOVU ContentLoader instancu** za loadOffer979!
+
+2. **`*ngFor="let element of items.elements"`**
+   - Iterira kroz `elements` array
+   - Za FlatpaketiPOTS: **1 iteracija** (FlatBHTelecom)
+   - Kreira **NOVU ContentLoader instancu** za FlatBHTelecom!
+
+3. **`*ngFor="let child of items.children"`**
+   - Iterira kroz `children` array
+   - Za FlatpaketiPOTS: **0 iteracija** (prazno)
+
+**Analogija:**
+- DefaultBlockComponent = **Građevinski radnik** koji čita plan zgrade
+- Vidi da zgrada ima:
+  - **actions** → Gradi **interfon panel** (dropdown za izbor ponude)
+  - **elements** → Gradi **apartmane** (FlatBHTelecom blok)
+  - **children** → Gradi **dodatne spratove** (u ovom slučaju nema)
+
+**Ključno:** Svaki `<z-contentloader>` u *ngFor-u kreira **NOVU ContentLoader instancu**!
+To znači: **Nova iteracija kroz FAZU 3-5**! 🔄
+
+---
+
+### 🔁 FAZA 7: Nova iteracija - loadOffer979 (Action dropdown)
+
+#### DefaultBlock → *ngFor actions → Nova ContentLoader
+
+**Nova ContentLoader instanca se kreira sa:**
+
+```typescript
+items = {
+  name: "loadOffer979",
+  code: "loadOffer979",
+  template: "select",              ← SELECT DROPDOWN!
+  elementType: "loadElements",     ← Specijalni tip!
+  disabled: true,
+  value: {
+    defaultValue: "5919",          ← Default vrijednost!
+    data: [
+      { id: null, value: "5919", name: "Flat BH Telecom" }
+    ]
+  },
+  parameters: { class: "z-col-24 nopadding", MANUAL_OFFER_SELECTION: "true" }
+}
+model = db.model  // ISTA REFERENCA kao FlatpaketiPOTS!
+parent = db.model
+pname = "FlatpaketiPOTS"
+```
+
+#### ContentLoader ngOnInit (loadOffer979)
+
+```typescript
+ngOnInit() {
+  // ... setup (setParametars, Dependency.set, ...) ...
+
+  // ValueManager.set()
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+}
+```
+
+#### ValueManager.set() (loadOffer979)
+
+```typescript
+public set(el, model, parameters, mod) {
+  // el = { name: "loadOffer979", template: "select", value: { defaultValue: "5919" } }
+
+  // 1️⃣ & 2️⃣ externalAPI i externalMessages → SKIP (null)
+
+  // 3️⃣ SET VALUE IF UNDEFINED OR RADIO/SELECT
+  if (['radio', 'select'].indexOf(el.template) >= 0 || model[el.name] === undefined) {
+    // template = "select" → ULAZI U IF!
+
+    if (model[el.name] === undefined) {
+      // model["loadOffer979"] = undefined → POKUŠAJ SETOVATI VRIJEDNOST
+
+      this.setDefaultValue(el, model);
+      // Unutar setDefaultValue():
+      // return !model[el.name] && el.value && el.value.defaultValue
+      //   ? model[el.name] = el.value.defaultValue
+      //   : false;
+      //
+      // model["loadOffer979"] = undefined ✅
+      // el.value = { defaultValue: "5919", data: [...] } ✅
+      // el.value.defaultValue = "5919" ✅
+      // → model["loadOffer979"] = "5919"  🔥 POSTAVLJENA VRIJEDNOST!
+    }
+
+    // 4️⃣ & 5️⃣ generationFormula i lookupStatement → SKIP (nema)
+    // value.data već postoji (hardcoded u JSON-u)
+  }
+}
+```
+
+**Rezultat:**
+```javascript
+db.model = {
+  FlatpaketiPOTS: undefined,      // SPECIFICATION (nema vrijednost)
+  loadOffer979: "5919"            // ACTION (postavljeno iz defaultValue!)
+}
+
+db.output = {
+  FlatpaketiPOTS: { value: db.model, active: true, ... },
+  loadOffer979: { value: db.model, active: true, ... }
+}
+```
+
+#### DLContent kreira SelectComponent
+
+```typescript
+// DLContent prima template = "select"
+// key["select"] = 11
+// Components[11] = SelectComponent
+// Kreira SelectComponent instancu i renderuje dropdown
+```
+
+**User vidi:** Dropdown sa jednom opcijom: "Flat BH Telecom" (selected)
+
+**Analogija:**
+- **loadOffer979** = **Interfon panel na ulazu u zgradu**
+- Korisnik može **izabrati apartman** (ponudu)
+- Trenutno je **selektovano "5919 - Flat BH Telecom"**
+- Kada korisnik promijeni izbor → menja `model["loadOffer979"]`
+
+---
+
+### 🔁 FAZA 8: Nova iteracija - FlatBHTelecom (Element/OFFER)
+
+#### DefaultBlock → *ngFor elements → Nova ContentLoader
+
+**Nova ContentLoader instanca:**
+
+```typescript
+items = {
+  name: "FlatBHTelecom",
+  code: "5919",
+  template: "basic_block",              ← BASIC BLOCK!
+  businessClassification: "OFFER",
+  businessParams: { ACTION_CODE: "NewPOTS" },
+  parameters: {
+    P_OFFER_ID: "5919",
+    ACTION_CODE: "NewPOTS",
+    P_SPECIFICATION_ID: "979",
+    PARENT_CODE: "5919",
+    P_CLASS_CODE: "ANALOG",
+    // ...
+  },
+  inputs: [                              ← 15+ input polja!
+    { name: "FIRSTNAME", template: "input", value: { generationFormula: "select..." } },
+    { name: "NAME", template: "input", validation: { mandatory: true } },
+    { name: "JOBTITLE", template: "select", value: { lookupStatement: "select..." } },
+    { name: "PRIKLJUCAK_ADSL", template: "select", value: { data: [...] } },
+    // ... još 10+ polja
+  ],
+  actions: [],                           ← Prazno
+  children: [                            ← 1 ugnjezdena SPECIFICATION!
+    { name: "Preuzimanja", code: "164", template: "default_block", ... }
+  ]
+}
+model = db.model  // ISTA REFERENCA!
+parent = db.model
+pname = "FlatpaketiPOTS"
+```
+
+#### ContentLoader ngOnInit (FlatBHTelecom)
+
+```typescript
+ngOnInit() {
+  // ... setup ...
+
+  // ValueManager.set()
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+  // template = "basic_block" (nije Inputoutput)
+  // model["FlatBHTelecom"] ostaje undefined (jer basic_block nema value property)
+}
+```
+
+**Rezultat:**
+```javascript
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FlatBHTelecom: undefined       // OFFER - organizacijski kontejner (kao SPECIFICATION)
+}
+```
+
+#### DLContent kreira BasicBlockComponent
+
+```typescript
+// template = "basic_block"
+// key["basic_block"] = 0
+// Components[0] = BasicBlockComponent
+// Kreira BasicBlockComponent instancu
+```
+
+#### BasicBlockComponent renderuje inputs i children
+
+**File:** `basic-block.template.html` (pojednostavljeno)
+
+```html
+<div class="basic-block">
+  <h4>{{ items.label }}</h4>  <!-- "Flat BH Telecom" -->
+
+  <!-- 1️⃣ RENDERUJ INPUTS (FIRSTNAME, NAME, JOBTITLE, ...) -->
+  <div class="inputs-section">
+    <z-contentloader
+      *ngFor="let input of items.inputs"    ← inputs = [FIRSTNAME, NAME, JOBTITLE, ...]
+      [items]="input"                       ← input = { name: "FIRSTNAME", template: "input", ... }
+      [model]="model"                       ← db.model (ista referenca!)
+      [parent]="model"
+      [pname]="items.name"                  ← "FlatBHTelecom"
+      [vparent]="vparent"
+      [valid]="valid"
+      [parameters]="items.parameters"       ← { P_OFFER_ID: "5919", P_CLASS_CODE: "ANALOG", ... }
+      [output]="output">
+    </z-contentloader>
+  </div>
+
+  <!-- 2️⃣ RENDERUJ CHILDREN (Preuzimanja) -->
+  <div class="children-section">
+    <z-contentloader
+      *ngFor="let child of items.children"  ← children = [Preuzimanja]
+      [items]="child"                       ← child = { name: "Preuzimanja", template: "default_block", ... }
+      [model]="model"                       ← db.model (ista referenca!)
+      [parent]="model"
+      [pname]="items.name"
+      [vparent]="vparent"
+      [valid]="valid"
+      [parameters]="items.parameters"
+      [output]="output">
+    </z-contentloader>
+  </div>
+</div>
+```
+
+**Šta se dešava:**
+
+BasicBlockComponent renderuje **DVE *ngFor petlje**:
+
+1. **`*ngFor="let input of items.inputs"`**
+   - Iterira kroz `inputs` array
+   - Za FlatBHTelecom: **15+ iteracija** (FIRSTNAME, NAME, JOBTITLE, ...)
+   - Svaka iteracija kreira **NOVU ContentLoader instancu**! 🔄
+
+2. **`*ngFor="let child of items.children"`**
+   - Iterira kroz `children` array
+   - Za FlatBHTelecom: **1 iteracija** (Preuzimanja)
+   - Kreira **NOVU ContentLoader instancu**! 🔄
+
+**Ključno:** Ovo je **SRCE REKURZIJE**! BasicBlock može renderovati **children** koji su opet **SPECIFICATION**, koji će opet renderovati **DefaultBlock**, koji će renderovati **elements** (OFFER), koji će renderovati **BasicBlock**, koji može renderovati **children**... 🔁🔁🔁
+
+**Analogija:**
+- BasicBlockComponent = **Arhitekta apartmana** koji čita plan apartmana
+- Vidi da apartman ima:
+  - **inputs** → Gradi **sobe** (input polja za FIRSTNAME, NAME, ...)
+  - **children** → Gradi **dodatni sprat IZNAD apartmana** (Preuzimanja blok)
+
+---
+
+### 🔁 FAZA 9: Iteracija kroz inputs (FIRSTNAME, NAME, JOBTITLE, ...)
+
+#### BasicBlock → *ngFor inputs → ContentLoader (FIRSTNAME)
+
+**Nova ContentLoader instanca:**
+
+```typescript
+items = {
+  name: "FIRSTNAME",
+  code: "FIRSTNAME",
+  dname: "FIRSTNAME_5919",             ← Unique name (code + offer ID)
+  label: "Ime",
+  template: "input",                   ← INPUT FIELD!
+  elementType: "text",
+  businessClassification: "Attribute",  ← Ovo je ATTRIBUTE (stvarni podatak)
+  value: {
+    data: [],
+    generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual",
+    autoincrement: null
+  },
+  validation: {},
+  export: true,                        ← Šalje se na backend
+  dataReference: "ATTRIBUTE"
+}
+model = db.model  // ISTA REFERENCA!
+parent = db.model
+pname = "FlatBHTelecom"
+parameters = { P_OFFER_ID: "5919", P_CLASS_CODE: "ANALOG", P_CA_ID: "12345", ... }
+```
+
+#### ContentLoader ngOnInit (FIRSTNAME)
+
+```typescript
+ngOnInit() {
+  // ... setup ...
+
+  // ValueManager.set()
+  this.ValueManager.set(this.items, this.model, this.items.parameters, this.db.mod);
+}
+```
+
+#### ValueManager.set() (FIRSTNAME)
+
+```typescript
+public set(el, model, parameters, mod) {
+  // el = { name: "FIRSTNAME", template: "input", value: { generationFormula: "select..." } }
+
+  // 1️⃣ & 2️⃣ externalAPI i externalMessages → SKIP
+
+  // 3️⃣ SET VALUE IF UNDEFINED
+  if (['radio', 'select'].indexOf(el.template) >= 0 || model[el.name] === undefined) {
+    // template = "input" (nije radio/select)
+    // model["FIRSTNAME"] = undefined → ULAZI U IF!
+
+    if (model[el.name] === undefined) {
+      // Pokušaj 1: autoincrement → false (value.autoincrement = null)
+      // Pokušaj 2: setValueByRefOrCode → false (mappingRef = null)
+      // Pokušaj 3: setDefaultValue → false (value.defaultValue = undefined)
+      // model["FIRSTNAME"] ostaje undefined
+    }
+
+    // 4️⃣ GENERATION FORMULA (SQL upit!)
+    !el.value || ['disabled', 'preview'].indexOf(mod) >= 0 && !this.db.patch ||
+      this[this.declare(el.value.generationFormula)](el, el.value.generationFormula, model, parameters, false);
+    // el.value = { data: [], generationFormula: "select...", ... } ✅
+    // mod = "new" (nije disabled/preview) ✅
+    // → POZIVA SE this.dblookup(...)!
+  }
+}
+
+private dblookup(el, formula, model, parameters, value, db) {
+  // formula = "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'FIRSTNAME') from dual"
+
+  // 1️⃣ PARSE SQL (zamijeni placeholdere)
+  let ApiQuery = this.ApiParse.parse(formula, model, parameters, true);
+  // Rezultat parsiranja:
+  // "select uomcommon.fgetFirstLastname('ANALOG', '12345', 'FIRSTNAME') from dual"
+  // #:P_CLASS_CODE# → "ANALOG"
+  // #:P_CA_ID# → "12345"
+
+  // 2️⃣ POZOVI BACKEND
+  this.ApiDispatcher.set({
+    method: "/uomback/common/lookupStatement",
+    params: { method: ApiQuery }
+  }).call((response: any) => {
+    // 3️⃣ BACKEND VRAĆA VRIJEDNOST
+    // response = "Kenan"  ← Backend izvršio SQL i vratio rezultat!
+
+    // 4️⃣ POSTAVI VRIJEDNOST U MODEL
+    this.setvalue(el, model, parameters, response, value, db);
+    // model["FIRSTNAME"] = "Kenan"  🔥 POSTAVLJENA VRIJEDNOST!
+  });
+}
+```
+
+**Rezultat:**
+```javascript
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FlatBHTelecom: undefined,
+  FIRSTNAME: "Kenan"           // ← NOVA VRIJEDNOST iz baze!
+}
+```
+
+**Analogija:**
+- **generationFormula** = **Upit arhivi** ("Daj mi ime korisnika iz baze")
+- Backend = **Arhivar** koji ide u arhivu i traži podatke
+- Response = **Pronađeni dokument** ("Ime je Kenan")
+- `model["FIRSTNAME"] = "Kenan"` = **Upis u formular**
+
+---
+
+#### Nova iteracija: NAME
+
+**ContentLoader instanca:**
+
+```typescript
+items = {
+  name: "NAME",
+  code: "NAME",
+  label: "Prezime/Naziv",
+  template: "input",
+  value: {
+    generationFormula: "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#,#:P_CA_ID#,'LASTNAME') from dual"
+  },
+  validation: { mandatory: true }  ← OBAVEZNO POLJE!
+}
+```
+
+**ValueManager.set() → dblookup() → Backend API call**
+
+```javascript
+// Backend vraća:
+response = "Ansa"
+
+// model se updatuje:
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FlatBHTelecom: undefined,
+  FIRSTNAME: "Kenan",
+  NAME: "Ansa"                 // ← NOVA VRIJEDNOST!
+}
+```
+
+---
+
+#### Nova iteracija: JOBTITLE
+
+**ContentLoader instanca:**
+
+```typescript
+items = {
+  name: "JOBTITLE",
+  code: "JOBTITLE",
+  label: "Funkcija",
+  template: "select",          ← SELECT DROPDOWN!
+  value: {
+    data: [],
+    lookupStatement: "select code, displayname from roccupation"  ← SQL za opcije!
+  }
+}
+```
+
+**ValueManager.set() → dblookup()**
+
+```typescript
+// 5️⃣ LOOKUP STATEMENT (SQL za dropdown opcije)
+this[this.declare(el.value.lookupStatement)](el, el.value.lookupStatement, model, parameters, false, true);
+// declare("select code...") = "dblookup"
+// Zadnji parametar = true (oznaka da je lookup statement!)
+
+private dblookup(el, formula, model, parameters, value, db) {
+  // db = true → Lookup statement (za dropdown opcije)
+
+  let ApiQuery = this.ApiParse.parse(formula, model, parameters, true);
+  // ApiQuery = "select code, displayname from roccupation"
+
+  this.ApiDispatcher.set({
+    method: "/uomback/common/lookupStatement",
+    params: { method: ApiQuery }
+  }).call((response: any) => {
+    // Backend vraća NOVU listu opcija:
+    // response = [
+    //   { value: "ENG", name: "Engineer" },
+    //   { value: "MAN", name: "Manager" },
+    //   { value: "TEC", name: "Technician" },
+    //   ...
+    // ]
+
+    this.setvalue(el, model, parameters, response, value, db);
+  });
+}
+
+private setvalue(el, model, parameters, response, value, db) {
+  // db = true → Response je array opcija!
+  // Array.isArray(response) || db && ["multiple", "radio", "AutoComplete"].indexOf(el.elementType) >= 0
+  //   ? this.isValueValid(el, model, response || [])
+  //   : ...
+
+  // → POZIVA SE this.isValueValid(...)!
+  this.isValueValid(el, model, response);
+}
+
+private isValueValid(el, model, response) {
+  // response = [{ value: "ENG", name: "Engineer" }, ...]
+
+  // 1️⃣ SPREMI OPCIJE U MODEL
+  el.value['data'] = model[el.name + 'options'] = response;
+  // model["JOBTITLEoptions"] = [{ value: "ENG", name: "Engineer" }, ...] 🔥
+
+  // 2️⃣ PROVJERI DA LI TRENUTNA VRIJEDNOST POSTOJI U OPCIJAMA
+  if (el.template != "BoxOptions" && model[el.name] && !response.filter(v => v.value == model[el.name]).length) {
+    model[el.name] = undefined;  // Resetuj ako ne postoji
+  }
+
+  // 3️⃣ SETUJ DEFAULT VRIJEDNOST (ako postoji)
+  if (!model[el.name] && el.template == "select") {
+    response.map(v => {
+      if (v.default == 1) model[el.name] = v.value;
+    });
+  }
+}
+```
+
+**Rezultat:**
+```javascript
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FlatBHTelecom: undefined,
+  FIRSTNAME: "Kenan",
+  NAME: "Ansa",
+  JOBTITLE: undefined,                          // Nema default vrijednost
+  JOBTITLEoptions: [                            // ← NOVE OPCIJE!
+    { value: "ENG", name: "Engineer" },
+    { value: "MAN", name: "Manager" },
+    { value: "TEC", name: "Technician" }
+  ]
+}
+```
+
+**Analogija:**
+- **lookupStatement** = **Upit meniju** ("Daj mi sve dostupne funkcije")
+- Backend = **Konobar** koji donosi meni
+- Response = **Lista jela** (opcija za dropdown)
+- `model["JOBTITLEoptions"]` = **Meni na stolu** (lista opcija)
+- `model["JOBTITLE"]` = **Narudžba** (šta je korisnik izabrao - još ništa)
+
+---
+
+#### Sve ostale inputs (PRIKLJUCAK_ADSL, ACTION_PNK, ...)
+
+**Isti proces se ponavlja za SVIH 15+ input polja:**
+
+```javascript
+// Nakon svih iteracija kroz inputs:
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FlatBHTelecom: undefined,
+
+  // Inputs sa generationFormula (SQL upit za vrijednost):
+  FIRSTNAME: "Kenan",                       // generationFormula → API call → "Kenan"
+  NAME: "Ansa",                             // generationFormula → API call → "Ansa"
+  ACTION_PNK: "N",                          // generationFormula → API call → "N"
+  FRSEGSCLASS_CODE: "ABC",                  // generationFormula → API call → "ABC"
+  PUSER_EMAIL: "email@bhtelecom.ba",        // generationFormula → API call
+  DEFAULTCONTACTPHONE: "033123456",         // generationFormula → API call
+  OFFER_NAME: "Flat BH Telecom",            // generationFormula → API call
+  DEFAULTCONTACTEMAIL: "user@example.com",  // generationFormula → API call
+  CCC_IND: "1",                             // generationFormula → API call
+
+  // Inputs sa lookupStatement (SQL upit za opcije):
+  JOBTITLE: undefined,
+  JOBTITLEoptions: [{ value: "ENG", name: "Engineer" }, ...],  // lookupStatement → API call
+
+  PRIKLJUCAK_ADSL: undefined,
+  PRIKLJUCAK_ADSLoptions: [                // lookupStatement → API call
+    { value: "0", name: "IMA ADSL" },
+    { value: "1", name: "NEMA ADSL" }
+  ],
+
+  // Hidden inputs (visible: false):
+  PQUANTITY_NUM: undefined,                 // Nema generationFormula
+
+  // Disabled inputs:
+  // ... ostali inputi
+}
+```
+
+---
+
+### 🔁 FAZA 10: Ugnjezdena struktura - Preuzimanja (Child SPECIFICATION)
+
+#### BasicBlock (FlatBHTelecom) → *ngFor children → ContentLoader (Preuzimanja)
+
+**REKURZIJA POČINJE PONOVO! 🔄**
+
+```typescript
+items = {
+  name: "Preuzimanja",
+  code: "164",
+  template: "default_block",         ← OPET default_block! (kao FlatpaketiPOTS)
+  businessClassification: "SPECIFICATION",
+  parameters: {
+    P_OFFER_ID: "5919",              ← Nasljeđeno od parent-a
+    P_SPECIFICATION_ID: "164",       ← Novo!
+    P_PARENT_SPECIFICATION_ID: "979",
+    PARENT_CODE: "5919",
+    SPECIFICATION_RELATIONSHIP_TYPE: "TAKEOVER",
+    // ...
+  },
+  inputs: [],                        ← Prazno (SPECIFICATION obično nema direktne inpute)
+  actions: [                         ← 1 action
+    { name: "loadOffer164", template: "select", value: { data: [...] } }
+  ],
+  elements: [                        ← 2 OFFER-a
+    { name: "OtkazivanjeISDNBRA...", code: "6481", template: "basic_block", inputs: [...] },
+    { name: "OtkazivanjeISDNPRA...", code: "6480", template: "basic_block", inputs: [...] }
+  ],
+  children: []                       ← Prazno (nema dalju rekurziju)
+}
+model = db.model  // ISTA REFERENCA KAO I PRIJE!
+parent = db.model
+pname = "FlatBHTelecom"
+```
+
+#### Proces se ponavlja (FAZA 3-6):
+
+```
+ContentLoader ngOnInit (Preuzimanja)
+  │
+  ├─ setParametars()       → items.parameters.parent = () => {...}
+  ├─ Dependency.set()      → Registruj "Preuzimanja"
+  ├─ ValueManager.setDP()  → Poveži sa dependency manager-om
+  ├─ ValueManager.set()    → model["Preuzimanja"] = undefined (OK za SPECIFICATION)
+  ├─ getIndexName()        → index = "Preuzimanja"
+  └─ db.setoutput()        → output["Preuzimanja"] = { value: model, active: true, ... }
+  │
+  ▼
+DLContent kreira DefaultBlockComponent (Preuzimanja)
+  │
+  └─ template = "default_block" → Components[1] → DefaultBlockComponent
+       │
+       ▼
+DefaultBlockComponent renderuje (Preuzimanja)
+  │
+  ├─ *ngFor actions → loadOffer164
+  │    └─ ContentLoader → ValueManager.set() → model["loadOffer164"] = ""
+  │         └─ DLContent → SelectComponent
+  │
+  ├─ *ngFor elements → OtkazivanjeISDNBRA...
+  │    └─ ContentLoader → ValueManager.set() → model["OtkazivanjeISDNBRA..."] = undefined
+  │         └─ DLContent → BasicBlockComponent
+  │              │
+  │              └─ *ngFor inputs → TAKEOVERUSERIDBRA
+  │                   └─ ContentLoader → ValueManager.set() → dblookup()
+  │                        │  → API call → model["TAKEOVERUSERIDBARAoptions"] = [...]
+  │                        └─ DLContent → SelectComponent
+  │
+  └─ *ngFor children → (prazno)
+```
+
+**Konačan db.model (sa ugnjezdenom strukturom):**
+
+```javascript
+db.model = {
+  // ========== ROOT NIVO (FlatpaketiPOTS) ==========
+  FlatpaketiPOTS: undefined,           // SPECIFICATION
+  loadOffer979: "5919",                // ACTION (select dropdown)
+
+  // ========== LEVEL 2 (FlatBHTelecom - OFFER) ==========
+  FlatBHTelecom: undefined,            // OFFER
+  FIRSTNAME: "Kenan",                  // ATTRIBUTE
+  NAME: "Ansa",                        // ATTRIBUTE
+  JOBTITLE: undefined,                 // ATTRIBUTE (nije izabrano)
+  JOBTITLEoptions: [...],              // Opcije za dropdown
+  PRIKLJUCAK_ADSL: undefined,          // ATTRIBUTE
+  PRIKLJUCAK_ADSLoptions: [...],       // Opcije
+  ACTION_PNK: "N",                     // ATTRIBUTE
+  FRSEGSCLASS_CODE: "ABC",             // ATTRIBUTE
+  // ... još 10+ atributa
+
+  // ========== LEVEL 3 (Preuzimanja - SPECIFICATION) ==========
+  Preuzimanja: undefined,              // SPECIFICATION (child od FlatBHTelecom)
+  loadOffer164: "",                    // ACTION (select dropdown)
+
+  // ========== LEVEL 4 (OtkazivanjeISDNBRA - OFFER) ==========
+  OtkazivanjeISDNBRAzboginstalacijePOTSa: undefined,  // OFFER
+  TAKEOVERUSERIDBRA: undefined,        // ATTRIBUTE
+  TAKEOVERUSERIDBARAoptions: [         // Opcije iz lookupStatement
+    { value: "033123456", name: "033123456" },
+    { value: "033789012", name: "033789012" }
+  ],
+  TAKEOVERAREA_CODE: "033",            // ATTRIBUTE (iz generationFormula)
+  // ...
+}
+```
+
+**Ključno zapažanje:**
+
+1. **db.model je FLAT (ravan)**
+   - Ne postoji hijerarhija! Sve je na istom nivou!
+   - `FlatBHTelecom.FIRSTNAME` → Spremljeno kao `model["FIRSTNAME"]`
+   - `Preuzimanja.OtkazivanjeISDNBRA.TAKEOVERUSERIDBRA` → Spremljeno kao `model["TAKEOVERUSERIDBRA"]`
+
+2. **SVIH ContentLoader instanci dijele ISTI db.model objekat**
+   - Prosljeđuje se **po referenci** (ne kopira se!)
+   - Svaka ContentLoader instanca dodaje svoje property-je u taj ISTI objekat
+
+3. **Struktura u JSON-u je hijerarhijska, ali model je flat**
+   - JSON hijerarhija = **Organizaciona struktura** (kako je prikazano)
+   - db.model = **Flat lista podataka** (sve na jednom nivou)
+
+**Analogija:**
+- **JSON struktura** = **Plan zgrade** (spratovi, apartmani, sobe)
+- **db.model** = **Jedan veliki formular** sa SVIM poljima iz SVIH spratova/apartmana/soba na jednoj stranici
+- Ne postoji `model.zgrada.sprat2.apartman3.soba1` - sve je `model.soba1`
+
+---
+
+### 💾 FAZA 11: Priprema za suicapture
+
+#### Kada korisnik klikne "Sačuvaj"
+
+**File:** `evidencija-usluge.component.ts` (~linija 500)
+
+```typescript
+save() {
+  // 1️⃣ VALIDACIJA
+  if (!this.isFormValid()) {
+    this.message.error("Popunite sva obavezna polja!");
+    return;
+  }
+
+  // 2️⃣ SUICAPTURE - Snimi trenutno stanje modela
+  this.db.suicapture();
+
+  // 3️⃣ POZOVI BACKEND
+  this.api.saveOrder(this.db.capture).subscribe(
+    (response) => {
+      this.message.success("Order je uspješno sačuvan!");
+    },
+    (error) => {
+      this.message.error("Greška prilikom čuvanja!");
+    }
+  );
+}
+```
+
+#### Unutar db.suicapture()
+
+**File:** `model.service.ts` (~linija 50)
+
+```typescript
+public suicapture() {
+  // Kreira DUBOKU KOPIJU modela!
+  this.capture = JSON.parse(JSON.stringify(this.model));
+
+  // Zašto JSON.parse(JSON.stringify())?
+  // 1. JSON.stringify() → Pretvara objekat u string
+  // 2. JSON.parse() → Pretvara string nazad u objekat
+  // Rezultat: POTPUNO NOVI objekat (nema reference na original)
+}
+```
+
+**Prije suicapture:**
+```javascript
+// db.model - LIVE objekat (menja se dok korisnik edituje)
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FIRSTNAME: "Kenan",
+  NAME: "Ansa",
+  JOBTITLE: undefined,
+  // ...
+}
+
+// db.capture - NE POSTOJI
+db.capture = undefined
+```
+
+**Nakon suicapture:**
+```javascript
+// db.model - LIVE objekat (nastavlja da se menja)
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FIRSTNAME: "Kenan",
+  NAME: "Ansa",
+  JOBTITLE: undefined,
+  // ...
+}
+
+// db.capture - SNAPSHOT (zamrznuto stanje)
+db.capture = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FIRSTNAME: "Kenan",     // ← Ova vrijednost je "zamrznuta"!
+  NAME: "Ansa",
+  JOBTITLE: undefined,
+  // ...
+}
+
+// VAŽNO: db.capture i db.model su RAZLIČITI objekti!
+// Promjena db.model NEĆE uticati na db.capture!
+```
+
+**Šta se dešava dalje:**
+
+```typescript
+// API poziv šalje CAPTURE (ne model!)
+this.api.saveOrder(this.db.capture).subscribe(...)
+
+// Pretpostavimo da API poziv traje 5 sekundi...
+// Korisnik NASTAVLJA da edituje formu:
+db.model.FIRSTNAME = "Amina"  // Korisnik promijenio ime!
+
+// db.model:
+{
+  FIRSTNAME: "Amina",  // ← NOVA vrijednost
+  NAME: "Ansa",
+  // ...
+}
+
+// db.capture:
+{
+  FIRSTNAME: "Kenan",  // ← OSTALO ISTO! Snapshot je zamrznut!
+  NAME: "Ansa",
+  // ...
+}
+
+// Backend prima:
+// { FIRSTNAME: "Kenan", NAME: "Ansa", ... }
+// NE prima "Amina"! Prima snapshot iz trenutka klika "Sačuvaj"!
+```
+
+**Zašto je suicapture važan?**
+
+1. **Konkurentno editovanje**
+   - Korisnik može nastaviti da edituje dok se čeka API response
+   - API poziv traje 3-5 sekundi
+   - Korisnik ne mora čekati - može već editovati sledeći red
+
+2. **Transakciona konzistentnost**
+   - Backend prima **tačno ono stanje koje je bilo kada je kliknuto "Sačuvaj"**
+   - Ne prima podatke koji su kasnije promijenjeni
+
+3. **Rollback u slučaju greške**
+   - Ako API vrati grešku, može se vratiti na capture stanje
+   - Ne mora se osvježavati cijela forma
+
+**Analogija:**
+- **db.model** = **Live Word dokument** (editujete ga u realnom vremenu)
+- **db.capture** = **PDF export** (zamrznuto stanje u trenutku exporta)
+- **save() → suicapture()** = **Klik na "Export to PDF"**
+- **Nastavi editovanje** = **Nastavi pisati u Word-u** (PDF ostaje nepromijenjen!)
+- **API call** = **Slanje PDF-a emailom** (šalje se PDF, ne Word)
+
+---
+
+### 🎯 KOMPLETAN TOK: JSON → db.model → suicapture (Vizualna reprezentacija)
+
+```
+📄 order-entry.md (JSON)
+  │
+  └─ Backend API response: { structure: [...] }
+       │
+       ▼
+🏗️ EvidencijaUslugeComponent
+  │   this.items = response.structure  // [FlatpaketiPOTS]
+  │
+  ├─────────────────────────────────────────────────────────
+  │ 🔄 REKURZIVNO RENDEROVANJE KROZ z-contentloader        │
+  ├─────────────────────────────────────────────────────────
+  │
+  ├─ *ngFor="let item of items"  (item = FlatpaketiPOTS)
+  │    │
+  │    └─ 📦 ContentLoader (FlatpaketiPOTS)
+  │         │   ⚙️ ngOnInit() → ValueManager.set() → model["FlatpaketiPOTS"] = undefined
+  │         │
+  │         └─ 🖼️ DLContent → DefaultBlockComponent
+  │              │
+  │              ├─ *ngFor actions → loadOffer979
+  │              │    │
+  │              │    └─ 📦 ContentLoader (loadOffer979)
+  │              │         │   ⚙️ ValueManager.set() → model["loadOffer979"] = "5919"
+  │              │         │
+  │              │         └─ 🖼️ DLContent → SelectComponent
+  │              │
+  │              ├─ *ngFor elements → FlatBHTelecom
+  │              │    │
+  │              │    └─ 📦 ContentLoader (FlatBHTelecom)
+  │              │         │   ⚙️ ValueManager.set() → model["FlatBHTelecom"] = undefined
+  │              │         │
+  │              │         └─ 🖼️ DLContent → BasicBlockComponent
+  │              │              │
+  │              │              ├─ *ngFor inputs → FIRSTNAME
+  │              │              │    │
+  │              │              │    └─ 📦 ContentLoader (FIRSTNAME)
+  │              │              │         │   ⚙️ ValueManager.set() → dblookup()
+  │              │              │         │      ├─ Parse SQL: "select ... 'FIRSTNAME'"
+  │              │              │         │      ├─ API call → Backend
+  │              │              │         │      └─ Response: "Kenan"
+  │              │              │         │   → model["FIRSTNAME"] = "Kenan" 🔥
+  │              │              │         │
+  │              │              │         └─ 🖼️ DLContent → InputComponent
+  │              │              │
+  │              │              ├─ *ngFor inputs → NAME
+  │              │              │    └─ 📦 ContentLoader → model["NAME"] = "Ansa" 🔥
+  │              │              │
+  │              │              ├─ *ngFor inputs → JOBTITLE
+  │              │              │    └─ 📦 ContentLoader → dblookup()
+  │              │              │         ├─ Parse SQL: "select code, displayname..."
+  │              │              │         ├─ API call → Backend
+  │              │              │         ├─ Response: [{ value: "ENG", name: "Engineer" }, ...]
+  │              │              │         └─ model["JOBTITLEoptions"] = [...] 🔥
+  │              │              │
+  │              │              ├─ *ngFor inputs → ... (još 10+ input polja)
+  │              │              │
+  │              │              └─ *ngFor children → Preuzimanja  🔄 REKURZIJA POČINJE!
+  │              │                   │
+  │              │                   └─ 📦 ContentLoader (Preuzimanja)
+  │              │                        │   ⚙️ ValueManager.set() → model["Preuzimanja"] = undefined
+  │              │                        │
+  │              │                        └─ 🖼️ DLContent → DefaultBlockComponent
+  │              │                             │
+  │              │                             ├─ *ngFor actions → loadOffer164
+  │              │                             │    └─ 📦 ContentLoader → model["loadOffer164"] = ""
+  │              │                             │
+  │              │                             └─ *ngFor elements → OtkazivanjeISDNBRA...
+  │              │                                  └─ 📦 ContentLoader → BasicBlockComponent
+  │              │                                       │
+  │              │                                       ├─ *ngFor inputs → TAKEOVERUSERIDBRA
+  │              │                                       │    └─ 📦 ContentLoader → dblookup()
+  │              │                                       │         └─ model["TAKEOVERUSERIDBARAoptions"] = [...]
+  │              │                                       │
+  │              │                                       └─ *ngFor inputs → TAKEOVERAREA_CODE
+  │              │                                            └─ 📦 ContentLoader → dblookup()
+  │              │                                                 └─ model["TAKEOVERAREA_CODE"] = "033"
+  │              │
+  │              └─ *ngFor children → (prazno za FlatpaketiPOTS)
+  │
+  ▼
+💾 db.model (FLAT struktura - sve na istom nivou)
+{
+  // Root nivo
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+
+  // FlatBHTelecom (OFFER)
+  FlatBHTelecom: undefined,
+  FIRSTNAME: "Kenan",
+  NAME: "Ansa",
+  JOBTITLE: undefined,
+  JOBTITLEoptions: [...],
+  PRIKLJUCAK_ADSL: undefined,
+  PRIKLJUCAK_ADSLoptions: [...],
+  // ... +10 atributa
+
+  // Preuzimanja (Child SPECIFICATION)
+  Preuzimanja: undefined,
+  loadOffer164: "",
+
+  // OtkazivanjeISDNBRA (Child OFFER)
+  OtkazivanjeISDNBRAzboginstalacijePOTSa: undefined,
+  TAKEOVERUSERIDBRA: undefined,
+  TAKEOVERUSERIDBARAoptions: [...],
+  TAKEOVERAREA_CODE: "033",
+  // ...
+}
+  │
+  ▼
+💾 db.output (Paralelna metadata struktura)
+{
+  FlatpaketiPOTS: { name: "FlatpaketiPOTS", value: db.model, active: true, calss: "SPECIFICATION", ... },
+  loadOffer979: { name: "loadOffer979", value: db.model, active: true, ... },
+  FlatBHTelecom: { name: "FlatBHTelecom", value: db.model, active: true, calss: "OFFER", ... },
+  FIRSTNAME: { name: "FIRSTNAME", value: db.model, active: true, calss: "Attribute", label: "Ime", ... },
+  NAME: { name: "NAME", value: db.model, active: true, calss: "Attribute", label: "Prezime/Naziv", ... },
+  // ...
+}
+  │
+  ▼
+🔘 User clicks "Sačuvaj"
+  │
+  └─ save()
+       │
+       ├─ 1️⃣ Validacija: isFormValid()
+       │
+       ├─ 2️⃣ Snapshot: db.suicapture()
+       │      │
+       │      └─ capture = JSON.parse(JSON.stringify(model))
+       │           │
+       │           └─ 💾 db.capture = { FIRSTNAME: "Kenan", NAME: "Ansa", ... }  ← ZAMRZNUTO STANJE!
+       │
+       └─ 3️⃣ API call: api.saveOrder(db.capture)
+            │
+            └─ 📡 Backend prima: { FIRSTNAME: "Kenan", NAME: "Ansa", ... }
+```
+
+---
+
+### 🔑 KLJUČNA ZAPAŽANJA
+
+#### 1️⃣ **Rekurzivna struktura JSON-a**
+
+```
+SPECIFICATION → elements (OFFER) → children (SPECIFICATION) → elements (OFFER) → ...
+     ↓                                    ↓
+DefaultBlock                         DefaultBlock (PONOVO!)
+     ↓                                    ↓
+BasicBlock                          BasicBlock (PONOVO!)
+```
+
+- JSON struktura može biti **beskrajno ugnjezdena**
+- Svaki nivo koristi **iste komponente** (ContentLoader, DefaultBlock, BasicBlock)
+- To je **REKURZIJA** - funkcija poziva samu sebe! 🔄
+
+#### 2️⃣ **Flat model struktura**
+
+```javascript
+// ❌ NIJE ovako (hijerarhija):
+db.model = {
+  FlatpaketiPOTS: {
+    loadOffer979: "5919",
+    FlatBHTelecom: {
+      FIRSTNAME: "Kenan",
+      NAME: "Ansa",
+      Preuzimanja: {
+        OtkazivanjeISDNBRA: {
+          TAKEOVERUSERIDBRA: "033123456"
+        }
+      }
+    }
+  }
+}
+
+// ✅ JESTE ovako (flat):
+db.model = {
+  FlatpaketiPOTS: undefined,
+  loadOffer979: "5919",
+  FlatBHTelecom: undefined,
+  FIRSTNAME: "Kenan",
+  NAME: "Ansa",
+  Preuzimanja: undefined,
+  OtkazivanjeISDNBRAzboginstalacijePOTSa: undefined,
+  TAKEOVERUSERIDBRA: "033123456"
+}
+```
+
+- Iako je JSON hijerarhijski, **model je ravan (flat)**
+- Sva polja iz svih nivoa su **direktno u model** (ne ugnjezdeno)
+- `model["FIRSTNAME"]` (ne `model.FlatBHTelecom.FIRSTNAME`)
+
+#### 3️⃣ **Jedna model referenca za sve**
+
+```typescript
+// SVI ContentLoader-i dijele ISTI objekat:
+ContentLoader (FlatpaketiPOTS)     →  model = db.model  ← Referenca
+ContentLoader (loadOffer979)       →  model = db.model  ← Ista referenca!
+ContentLoader (FlatBHTelecom)      →  model = db.model  ← Ista referenca!
+ContentLoader (FIRSTNAME)          →  model = db.model  ← Ista referenca!
+ContentLoader (Preuzimanja)        →  model = db.model  ← Ista referenca!
+ContentLoader (OtkazivanjeISDNBRA) →  model = db.model  ← Ista referenca!
+
+// Svaki dodaje svoje property-je u taj ISTI objekat:
+ContentLoader (FIRSTNAME) → model["FIRSTNAME"] = "Kenan"
+ContentLoader (NAME)      → model["NAME"] = "Ansa"  // U ISTI objekat!
+```
+
+- `model` se **prosljeđuje po referenci** (ne kopira se)
+- Svi ContentLoader-i rade na **ISTOM objektu**
+- Kao **centralno skladište** gdje svi radnici dodaju materijale
+
+#### 4️⃣ **ValueManager.set() ima različite uloge**
+
+| Element Type | Template | ValueManager.set() ponašanje |
+|--------------|----------|------------------------------|
+| SPECIFICATION | default_block | Ne setuje vrijednost (ostaje undefined) |
+| OFFER | basic_block | Ne setuje vrijednost (ostaje undefined) |
+| ACTION | select | Setuje defaultValue |
+| ATTRIBUTE (input) | input | Izvršava generationFormula → API call → setuje vrijednost |
+| ATTRIBUTE (select) | select | Izvršava lookupStatement → API call → popunjava opcije |
+
+- **SPECIFICATION i OFFER** = Organizacijski kontejneri (nemaju vrijednost)
+- **ACTION** = Dropdown za izbor (ima defaultValue)
+- **ATTRIBUTE** = Stvarni podaci (input polja, dropdowns sa opcijama)
+
+#### 5️⃣ **output je paralelna metadata struktura**
+
+```javascript
+// Za svaki element u model:
+db.model = { FIRSTNAME: "Kenan" }
+
+// Postoji metadata u output:
+db.output = {
+  FIRSTNAME: {
+    name: "FIRSTNAME",
+    code: "FIRSTNAME",
+    label: "Ime",
+    template: "input",
+    value: db.model,  // ← REFERENCA na cijeli model!
+    active: true,
+    calss: "Attribute",
+    export: true
+  }
+}
+```
+
+- `output` čuva **metadata** o svakom elementu
+- Koristi se za validaciju, export, prikaz...
+- `output[index].value` pokazuje na `db.model` (referenca!)
+
+#### 6️⃣ **suicapture je snapshot mehanizam**
+
+```javascript
+// PRIJE suicapture:
+db.model.FIRSTNAME = "Kenan"
+db.capture = undefined
+
+// Klik "Sačuvaj" → db.suicapture()
+db.model.FIRSTNAME = "Kenan"
+db.capture.FIRSTNAME = "Kenan"  // SNAPSHOT
+
+// Korisnik NASTAVI editovanje:
+db.model.FIRSTNAME = "Amina"    // PROMIJENJENO!
+db.capture.FIRSTNAME = "Kenan"  // OSTALO ISTO! (snapshot)
+
+// API poziv šalje:
+api.saveOrder(db.capture)  // Šalje "Kenan", NE "Amina"!
+```
+
+- `capture = JSON.parse(JSON.stringify(model))` → **Duboka kopija**
+- Omogućava nastavak editovanja dok se čeka API response
+- Backend prima **tačno ono stanje iz trenutka klika "Sačuvaj"**
+
+---
+
+### 📚 ZAKLJUČAK
+
+**Kompletan tok od JSON-a do suicapture:**
+
+1. **Backend šalje JSON** → `order-entry.md` struktura
+2. **EvidencijaUsluge prima** → `this.items = response.structure`
+3. ***ngFor iterira** → Kreira ContentLoader instance
+4. **ContentLoader za svaki element** → Inicijalizacija (setParametars, Dependency, ValueManager, setoutput)
+5. **DLContent kreira komponentu** → DefaultBlock / BasicBlock / Input / Select
+6. **Komponenta renderuje children** → Nova *ngFor → Nova ContentLoader → **REKURZIJA! 🔄**
+7. **ValueManager popunjava vrijednosti** → generationFormula / lookupStatement → API calls
+8. **model se popunjava** → Sva polja na istom nivou (flat)
+9. **output se popunjava** → Metadata struktura paralelna sa model
+10. **Korisnik klikne "Sačuvaj"** → `db.suicapture()` → **Snapshot trenutnog stanja**
+11. **API poziv** → Backend prima `db.capture` (zamrznuto stanje)
+
+**Analogija:**
+- **JSON** = Arhitektonski plan kompleksne zgrade
+- **ContentLoader rekurzija** = Građevinska ekipa koja gradi zgradu sprat po sprat, apartman po apartman, sobu po sobu
+- **db.model** = Jedan veliki formular sa SVIM poljima sa svih spratova
+- **db.output** = Informacioni katalog o svakoj sobi
+- **db.capture** = Fotokopija formulara u trenutku predaje
+
+---
+
+*Ažurirano: 2026-02-09*
+*Dodatak 5: JSON Struktura order-entry.md - Kompletan tok od JSON-a kroz rekurzivnu z-contentloader strukturu do flat db.model-a i suicapture snapshot mehanizma*
