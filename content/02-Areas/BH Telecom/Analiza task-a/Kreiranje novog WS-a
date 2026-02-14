@@ -1,0 +1,260 @@
+ Here is Claude's plan:                                                                                                                                                       
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Plan: TypeScript Model Builder Library
+
+ Context
+
+ Team lead trazi kreiranje standalone TypeScript funkcije (library) koja replicira Angular dinamicku komponentu logiku za popunjavanje db.model i db.output. Trenutno se ovaj
+  proces desava unutar Angular-a kroz rekurzivne ContentLoader komponente, ValueManager, ApiCallParse, ApiDispatcher servise. Cilj je izdvojiti ovu logiku u cistu async
+ TypeScript funkciju bez Angular zavisnosti, koja prima offerId, specId, processId + customer parametre, poziva backend API-je, i vraca popunjen model i output.
+
+ ---
+ Arhitektura
+
+ Input
+
+ {
+   offerId: string;          // "5919"
+   specId: string;           // "979"
+   processId: string;        // "10"
+   backendBaseUrl: string;   // "http://localhost:8080"
+   customerParams: {         // P_CA_ID, P_BA_ID, P_SA_ID, etc.
+     P_CA_ID?: string;
+     P_BA_ID?: string;
+     P_SA_ID?: string;
+     [key: string]: any;
+   };
+ }
+
+ Output
+
+ {
+   model: Record<string, any>;   // Hijerarhijski popunjen model
+   output: Record<string, any>;  // Metadata struktura
+   errors: Array<{ element: string; error: string; phase: string }>;
+ }
+
+ ---
+ File struktura
+
+ Svi fajlovi u novom folderu: src/lib/model-builder/
+
+ src/lib/model-builder/
+   index.ts                    # Glavna exportovana async funkcija: buildModel()
+   types.ts                    # Interfejsi (InputObject, DynamicOutput, etc.)
+   http-client.ts              # fetch wrapper sa base URL (zamjenjuje RestApiService)
+   api-call-parse.ts           # SQL placeholder zamjena (port iz apicall.parse.service.ts)
+   auto-increment.ts           # Autoincrement counter (port iz auto.increment.service.ts)
+   value-resolver.ts           # Popunjavanje modela (async port iz value.manager.ts)
+   output-builder.ts           # setoutput() logika (port iz model.service.ts)
+   structure-processor.ts      # Rekurzivno procesiranje strukture (zamjenjuje ContentLoader)
+
+ ---
+ Implementacija po fajlovima
+
+ 1. types.ts - Interfejsi
+
+ Kopirati iz src/app/z-dynamic/interfaces/data.value.interface.ts:
+ - InputObject (sva polja)
+ - InputValue (defaultValue, generationFormula, lookupStatement, data, autoincrement)
+ - DynamicOutput (attr, items, spec, name, code, value, active, calss, ...)
+ - InputValidation
+ - DependencyElement
+ - RestPayload (payload, responseCode, successful)
+
+ Dodati:
+ - BuildModelInput (input za glavnu funkciju)
+ - BuildModelResult (output)
+ - ErrorEntry (element, error, phase)
+
+ 2. http-client.ts - HTTP wrapper
+
+ Zamjenjuje RestApiService + ApiDispatcher:
+ - get(path, params?) - native fetch GET, vraca response.payload
+ - post(path, body) - native fetch POST sa entity wrapping ({ languageId: 0, channel: '', entity: data }), vraca response.payload
+ - Detektuje HTTP metod iz path-a: POST@/path -> POST, /path -> GET (default)
+
+ 3. api-call-parse.ts - Parsiranje SQL-a i API poziva
+
+ Port iz: src/app/z-dynamic/services/apicall.parse.service.ts
+
+ Kljucne metode:
+ - parse(value, model, param, statement?) - Entry point
+ - parseToUseStatement(value, model, params) - Zamjena #:FIELD# -> vrijednost iz params, $:FIELD -> vrijednost iz model-a
+ - parseToUse(value, model, params) - Parse API method poziva
+ - getElementParamVal(params, paramName) - Traverse parent() chain za nalazenje parametra
+ - mapvalue(obj, key) - Case-insensitive property lookup
+ - find(value, model, params) - Nadi vrijednost po markeru
+
+ 4. auto-increment.ts - Counter
+
+ Port iz: src/app/z-dynamic/services/auto.increment.service.ts
+
+ Jednostavan counter: set(name, value), increment(name) -> vraca sekvencijalni broj
+
+ 5. value-resolver.ts - Popunjavanje modela (KLJUCNI FAJL)
+
+ Async port iz: src/app/z-dynamic/services/value.manager.ts
+
+ Glavna razlika: sve subscribe() callback-e zamjenjujemo sa await.
+
+ async set(el, model, parameters, mod = 'new'):
+   1. Ako el.externalAPI -> await setChildren(el, model, parameters)
+   2. Ako el.externalMessages -> await setmessages(el, model, parameters)
+   3. Ako template je radio/select ILI model[el.name] === undefined:
+      a. autoincrement(el, model, parameters) ||
+      b. setValueByRefOrCode(el, model, parameters) ||
+      c. setDefaultValue(el, model)
+      d. Ako el.value.generationFormula -> await dblookup/generate()
+      e. Ako el.value.lookupStatement -> await dblookup/generate()
+
+ Kljucne async metode:
+ - dblookup() - POST /uomback/common/lookupStatement sa parsiranim SQL-om
+ - generate() - Dinamicki API poziv parsiran iz formule
+ - setChildren() - Dohvata child strukturu iz externalAPI
+ - setmessages() - Dohvata validation poruke
+
+ Sync metode (direktan port):
+ - setDefaultValue() - model[name] = el.value.defaultValue
+ - setValueByRefOrCode() - Resolve mappingRef (external., head., sum:, anc.)
+ - autoincrement() - Auto-numberiranje
+ - setvalue() - Processira API response i assigna u model
+ - isValueValid() - Validira da li vrijednost postoji u opcijama
+ - mappingreference() / mappingreffbyor() - Resolve reference putanje
+
+ 6. output-builder.ts - Kreiranje output strukture
+
+ Port iz: src/app/z-dynamic/services/model.service.ts -> setoutput() metoda
+
+ function setOutput(el, model, output, index):
+   el.output = output[index] = output[index]
+     ? Object.assign(output[index], { name, code, value: !el.export || model })
+     : { attr: {}, items: {}, spec: {}, name, code, value, active, calss, businessParams, label, elementType, dataReference }
+
+ 7. structure-processor.ts - Rekurzivno procesiranje (KLJUCNI FAJL)
+
+ Zamjenjuje ContentLoader + DefaultBlock + BasicBlock rekurziju.
+
+ KRITICNO - Model je HIJERARHIJSKI, ne flat!
+
+ Oba bloka (basic_block i default_block) u ngOnInit rade:
+ if (!this.model[this.items.name]) this.model[this.items.name] = {};
+ I oba template-a prosljedjuju model[items.name] djeci.
+
+ async processElement(item, model, output, parameters, parent?, pname?):
+   1. Date validacija (validFrom/validTo)
+   2. item.active = item.active ?? true
+   3. Linkovati parametre: item.parameters.parent = () => parameters
+   4. await valueResolver.set(item, model, item.parameters, mode)
+   5. index = getIndexName(parent, pname, item, model)
+   6. setOutput(item, model, output, index)
+   7. Kreirati nested model: model[item.name] = model[item.name] || {}
+   8. childModel = model[item.name]
+   9. outputTarget = output[index] || output
+   10. Procesirati sub-nizove SEKVENCIJALNO:
+       - for (input of item.inputs)    await processElement(input, childModel, outputTarget.attr || outputTarget, ...)
+       - for (element of item.elements) await processElement(element, childModel, outputTarget.items || outputTarget, ...)
+       - for (child of item.children)   await processElement(child, childModel, outputTarget.spec || outputTarget, ...)
+       - for (action of item.actions)   await processElement(action, childModel, {}, ...)
+       - for (message of item.messages) await processElement(message, childModel, {}, ...)
+
+ 8. index.ts - Glavna funkcija
+
+ export async function buildModel(input: BuildModelInput): Promise<BuildModelResult> {
+   const httpClient = new HttpClient(input.backendBaseUrl);
+   const errors = [];
+
+   // 1. Fetch structure
+   const response = await httpClient.get('/pcrt/order-entry', {
+     interactionId: 16,
+     productOfferId: input.offerId,
+     productSpecificationId: input.specId,
+     appProcessId: input.processId
+   });
+
+   // 2. Initialize model i output
+   const model = { auto: {} };
+   const output = {};
+
+   // 3. Merge params
+   const params = { ...response.parameters, ...input.customerParams, P_MAIN_OFFER_ID: input.offerId };
+
+   // 4. Init servise
+   const apiParse = new ApiCallParse();
+   const autoInc = new AutoIncrement(model);
+   const valueResolver = new ValueResolver(httpClient, apiParse, autoInc, model, params, errors);
+   const processor = new StructureProcessor(valueResolver, errors);
+
+   // 5. Procesirati strukturu rekurzivno
+   await processor.processStructure(response.structure, model, output, params);
+
+   // 6. Cleanup (ukloni parent() reference za serialization)
+   const cleanModel = JSON.parse(JSON.stringify(model));
+   const cleanOutput = JSON.parse(JSON.stringify(output));
+
+   return { model: cleanModel, output: cleanOutput, errors, structure: response };
+ }
+
+ ---
+ Kriticni source fajlovi za portovanje
+ Servis: ValueManager
+ Source fajl: src/app/z-dynamic/services/value.manager.ts
+ Kljucna logika: set(), dblookup(), generate(), setvalue(), mappingreference()
+ ────────────────────────────────────────
+ Servis: ApiCallParse
+ Source fajl: src/app/z-dynamic/services/apicall.parse.service.ts
+ Kljucna logika: parse(), parseToUseStatement(), getElementParamVal(), mapvalue()
+ ────────────────────────────────────────
+ Servis: Model
+ Source fajl: src/app/z-dynamic/services/model.service.ts
+ Kljucna logika: setoutput()
+ ────────────────────────────────────────
+ Servis: AutoIncrement
+ Source fajl: src/app/z-dynamic/services/auto.increment.service.ts
+ Kljucna logika: set(), increment()
+ ────────────────────────────────────────
+ Servis: ContentLoader
+ Source fajl: src/app/z-dynamic/components/z-dynamicloader/z-contentloader/contentloader.component.ts
+ Kljucna logika: ngOnInit() sekvenca
+ ────────────────────────────────────────
+ Servis: DefaultBlock template
+ Source fajl: src/app/z-dynamic/components/z-blocks/z-default-block/defaultblock.template.html
+ Kljucna logika: model[items.name] nesting, output.attr/items/spec mapiranje
+ ────────────────────────────────────────
+ Servis: BasicBlock component
+ Source fajl: src/app/z-dynamic/components/z-blocks/z-basic-block/basicblock.component.ts
+ Kljucna logika: model[items.name] = {} kreiranje
+ ────────────────────────────────────────
+ Servis: Interfejsi
+ Source fajl: src/app/z-dynamic/interfaces/data.value.interface.ts
+ Kljucna logika: InputObject, DynamicOutput, InputValue
+ ---
+ Sta se NE portuje
+
+ - DependencyManager - Runtime UI interakcije (disabled/visible/refresh efekti)
+ - ValidationManager - UI validacija (mandatory, formatPattern, etc.)
+ - Actions service - Priprema za save (koristi output, ne model)
+ - Angular komponente - Nikakav UI rendering
+ - DragService - UI drag & drop
+
+ ---
+ Redoslijed implementacije
+
+ 1. types.ts - Interfejsi
+ 2. http-client.ts - HTTP wrapper
+ 3. api-call-parse.ts - SQL parsing (najkompleksniji port, ali nema async)
+ 4. auto-increment.ts - Trivijalan port
+ 5. output-builder.ts - Trivijalan port
+ 6. value-resolver.ts - Async port ValueManager-a
+ 7. structure-processor.ts - Rekurzivna logika
+ 8. index.ts - Orchestracija
+
+ ---
+ Verifikacija
+
+ 1. Unit test: Pozvati buildModel() sa stvarnim podacima (offerId=5919, specId=979, processId=10, P_CA_ID=12345, P_BA_ID=67890) i uporediti rezultat sa Angular-ovim
+ db.model/db.output (iz console.log-ova)
+ 2. Provjera hijerarhije: Verifikovati da model ima strukturu model.FlatpaketiPOTS.FlatBHTelecom.FIRSTNAME = "Kenan"
+ 3. Provjera output-a: Verifikovati da output ima attr, items, spec pod-objekte
+ 4. Error handling: Verifikovati da errors array hvata neuspjele API pozive bez crasha
+ 5. Serialization: Verifikovati da JSON.stringify(model) radi bez circular reference
