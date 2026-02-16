@@ -796,3 +796,659 @@ types.ts → auto-increment.ts → output-builder.ts → http-client.ts
 ```
 
 Jednostavno → složeno. Svaki fajl gradi na znanju iz prethodnog.
+
+---
+
+## types.ts - Rječnik projekta
+
+### Zašto ovaj fajl postoji?
+
+Zamislimo da razgovaramo sa drugom osobom o automobilu. Ako kažeš "prenesi mi ključeve", druga osoba treba da zna šta su "ključevi" — male metalne stvari koje se stavljaju u bravu. TypeScript **interfejsi** su kao dogovor između programera šta znači svaki termin. Kada vidiš `InputObject` u kodu, tačno znaš koje podatke sadrži.
+
+Ovaj fajl je **rječnik** cijelog projekta. Definira "oblik" (shape) svakog objekta koji se koristi u model builder-u.
+
+Fajl ima dvije sekcije:
+- **Linije 1–171**: Angular interfejsi portovani iz `z-dynamic/interfaces/data.value.interface.ts`
+- **Linije 176–201**: Novi interfejsi samo za `buildModel()` (naši dodaci)
+
+---
+
+### Centralni interfejs: `InputObject`
+
+Ovo je **najvažniji** tip u cijelom projektu. Svaki element u strukturi (FIRSTNAME, Budenje, FlatBHTelecom) je `InputObject`.
+
+```typescript
+export interface InputObject {
+  // Identifikacija
+  name?: any;                       // "FIRSTNAME", "Budenje", "FlatBHTelecom"
+  code?: string;                    // "FIRSTNAME", "2246", "5919"
+  label?: string;                   // "Ime", "Budenje", "Flat BH Telecom"
+  template?: string;                // "text", "select", "CheckboxAD", "basic_block"
+  elementType?: string;             // "text", "select", "CheckboxAD", "loadElements"
+
+  // Status
+  active?: boolean;                 // Da li je element aktivan (prikazan)
+  disabled?: boolean;               // Da li je onemogućen (ne može se editovati)
+  visible?: boolean;                // Da li je vidljiv
+
+  // Kako dobiti vrijednost
+  value?: InputValue;               // Izvor vrijednosti (formula, lookup, default, autoincrement)
+  mappingRef?: string;              // Reference na drugo polje ("external.P_CA_ID", "head.NAME")
+
+  // Klasifikacija
+  businessClassification?: string;  // "SPECIFICATION", "OFFER", "Attribute"
+  businessParams?: object;          // { ACTION_CODE: "NewPOTS" }
+
+  // API pozivi
+  externalAPI?: string;             // URL za dohvatanje child strukture
+  externalMessages?: string;        // SQL za dohvatanje validacionih poruka
+
+  // Rekurzivna struktura (djeca)
+  inputs?: InputObject[];           // Atributi (FIRSTNAME, NAME)
+  elements?: InputObject[];         // Glavni elementi (Budenje, Preuzimanja)
+  children?: InputObject[];         // Specifikacije (default_block elementi)
+  actions?: InputObject[];          // Akcije (loadOffer979 - select dropdown)
+  messages?: InputObject[];         // Validacione poruke
+
+  // Runtime
+  parameters?: any;                 // Runtime parametri sa parent() lancem
+  output?: DynamicOutput;           // Link na output entry
+  set?: boolean;                    // Flag: da li je ValueManager.set() već pozvan
+
+  // Datumski raspon validnosti
+  validFrom?: string;               // "01/01/2024"
+  validTo?: string;                 // "31/12/2024"
+
+  // Ostalo
+  dependency?: DependencyElement[]; // UI dependency (disabled/visible/refresh)
+  validation?: InputValidation;     // Pravila (mandatory, min, max, pattern)
+  attributes?: InputAttributes;     // CSS klase
+  initActivity?: boolean;           // Da li je inicijalno aktivan
+}
+```
+
+#### Analogija za InputObject
+
+Zamislimo da InputObject opisuje jednu komponentu u Ikea namještaju:
+
+- **name**: Naziv komponente ("Noga stola", "Zavrtanj A5")
+- **code**: Barcode ("12345")
+- **label**: Čitljiv naziv na kutiji ("Čelična noga 70cm")
+- **template**: Tip komponente ("noga", "zavrtanj", "ploča")
+- **active**: Da li se koristi u ovoj konfiguraciji (true/false)
+- **value.defaultValue**: Ako piše "2 komada" na instrukcijama
+- **value.generationFormula**: "Idi u magacin i donesi točan broj koji piše u sekciji 3.4" (API poziv)
+- **inputs/elements/children**: Pod-komponente (zavrtnji koji drže nogu)
+
+---
+
+### `InputValue` - Odakle dolazi vrijednost?
+
+```typescript
+export interface InputValue {
+  defaultValue?: any;          // Statička vrijednost: "5919", null, true, 42
+  autoincrement?: any;         // Sekvencijalni broj: 200, 201, 202...
+  generationFormula?: string;  // API poziv: "POST@/some/endpoint?param=#:P_CA_ID#"
+  lookupStatement?: string;    // SQL upit: "SELECT name FROM customer WHERE id=#:P_CA_ID#"
+  data?: object[];             // Opcije za select/radio (ako je statička lista)
+  selected?: object;           // Trenutno selektovana stavka (za dropdown)
+  column?: object[];           // Kolone za tabelu
+  options?: object;            // Dodatne opcije
+  temp?: object[];             // Privremeni podaci
+}
+```
+
+#### Prioritet izvora vrijednosti
+
+ValueManager gleda po redosljedu — ako nađe prvi izvor, ignoriše ostale:
+
+```
+1. autoincrement      → model[name] = 200++
+2. mappingRef         → model[name] = model["OTHER_FIELD"] ili parameters.P_CA_ID
+3. defaultValue       → model[name] = "5919"
+4. generationFormula  → HTTP poziv → model[name] = response
+5. lookupStatement    → DB lookup  → model[name] = response
+```
+
+#### Primjer (element "FIRSTNAME")
+
+```json
+{
+  "name": "FIRSTNAME",
+  "template": "text",
+  "value": {
+    "generationFormula": "select uomcommon.fgetFirstLastname(#:P_CLASS_CODE#, #:P_CA_ID#, 'FIRSTNAME') from dual"
+  }
+}
+```
+
+ValueManager vidi `generationFormula`, parsira SQL (zamijeni `#:P_CA_ID#` sa `130025794`), pošalje na backend, dobije `"JNF-8241"` → `model["FIRSTNAME"] = "JNF-8241"`.
+
+---
+
+### `DynamicOutput` - Output entry struktura
+
+```typescript
+export interface DynamicOutput {
+  attr?: any;               // Pod-objekat za inputs
+  items?: any;              // Pod-objekat za elements
+  spec?: any;               // Pod-objekat za children
+
+  name?: string;            // "FIRSTNAME", "Budenje"
+  code?: string;            // "FIRSTNAME", "2246"
+  active?: boolean;         // Da li je aktivan
+  label?: string;           // "Ime", "Budenje"
+  value?: any;              // Link na model
+
+  calss?: string;           // "SPECIFICATION", "OFFER", "Attribute"
+                            // (da, "calss" je typo u Angular-u koji je namjerno sačuvan!)
+  elementType?: string;     // "text", "select", "CheckboxAD"
+  businessParams?: object;  // { ACTION_CODE: "NewPOTS" }
+
+  adind?: string;           // Samo za CheckboxAD: "A" (add), "D" (delete)
+  attvalue?: any;           // Za inputs: kopija vrijednosti iz model-a
+}
+```
+
+**Zašto output postoji?** Angular UI koristi output da zna koje polje prikazati kao text input a koje kao checkbox, koji label da koristi, da li je nešto aktivno. Model Builder gradi output za **full parity** sa Angular-om.
+
+---
+
+### `InputValidation` - Pravila
+
+```typescript
+export interface InputValidation {
+  mandatory?: boolean;           // Obavezno polje
+  mandatoryFormula?: string;     // SQL koji vraća 1 (mandatory) ili 0 (optional)
+  formatPattern?: string;        // Regex: "^[0-9]{3}-[0-9]{3}$"
+  min?: number;                  // Minimalna vrijednost (za brojeve)
+  max?: number;                  // Maksimalna vrijednost
+  maxlength?: number;            // Maksimalna dužina stringa
+  validationFormula?: string;    // SQL koji vraća error message ako nije valid
+  valueType?: string;            // "number", "string", "date"
+}
+```
+
+**Napomena**: Model Builder **NE** izvršava validaciju. Samo čita i popunjava `model`. Angular UI koristi ove podatke za real-time validaciju dok korisnik kuca.
+
+---
+
+### `DependencyElement` - UI zavisnosti
+
+```typescript
+export interface DependencyElement {
+  name?: string;           // Ime elementa koji se mijenja
+  element?: string;        // Ime elementa koji triger-uje promjenu
+  effect?: string;         // "disabled", "visible", "refresh"
+  elementEvent?: string;   // "change", "blur", "focus"
+  elementValue?: any;      // Vrijednost koja triger-uje effect
+  effectSource?: string;   // Izvor za refresh (API poziv)
+}
+```
+
+**Primjer**: "Ako `Budenje === true`, onemogući polje `WakeUpTime`"
+
+```json
+{
+  "name": "WakeUpTime",
+  "element": "Budenje",
+  "effect": "disabled",
+  "elementEvent": "change",
+  "elementValue": false
+}
+```
+
+**Napomena**: Model Builder **NE** procesira dependency. To je UI stvar koja se izvršava u Angular-u kada korisnik mijenja vrijednosti.
+
+---
+
+### Novi interfejsi (za buildModel API)
+
+#### `BuildModelInput` - Ulaz u buildModel()
+
+```typescript
+export interface BuildModelInput {
+  offerId: string;              // "5919" - koji offer korisnik želi
+  specId: string;               // "979"  - specifikacija (FlatpaketiPOTS)
+  processId: string;            // "10"   - proces (NewPOTS)
+  backendBaseUrl: string;       // "http://172.30.80.1:48080"
+  headers?: Record<string, string>;   // { Cookie: "SESSION=..." }
+  customerParams: {
+    P_CA_ID?: string;           // "130025794" - Customer Account ID
+    P_BA_ID?: string;           // "330021716" - Billing Account ID
+    P_SA_ID?: string;           // Service Account ID (ako postoji)
+    [key: string]: any;         // Bilo koji drugi custom parametar
+  };
+}
+```
+
+#### `BuildModelResult` - Izlaz iz buildModel()
+
+```typescript
+export interface BuildModelResult {
+  model: Record<string, any>;   // Popunjen model objekat
+  output: Record<string, any>;  // Output struktura (metadata)
+  errors: ErrorEntry[];         // Lista grešaka tokom procesiranja
+  structure: any;               // Originalna struktura iz backend-a (za debug)
+}
+```
+
+#### `ErrorEntry` - Format greške
+
+```typescript
+export interface ErrorEntry {
+  element: string;  // "FIRSTNAME" - koji element je failao
+  error: string;    // "HTTP 404: Not Found" - šta se desilo
+  phase: string;    // "fetchStructure", "dblookup", "generate" - u kojoj fazi
+}
+```
+
+**Zašto ne throw-ujemo exception?** Zato što jedan element može failati ali to ne znači da cijela forma treba failati. Ostali elementi se normalno procesiraju — kao u Angular-u.
+
+---
+
+### Zašto toliko `?` (optional polja)?
+
+```typescript
+name?: string;  // ← Znak pitanja znači "možda postoji, možda ne"
+```
+
+Različiti tipovi elemenata imaju različita polja:
+
+| Element | Ima | Nema |
+|---------|-----|------|
+| Text input ("FIRSTNAME") | `value.generationFormula` | `elements` |
+| Select ("loadOffer979") | `value.data` (opcije) | `generationFormula` |
+| CheckboxAD ("Budenje") | `value.lookupStatement` | `inputs` |
+| basic_block ("FlatBHTelecom") | `inputs`, `elements`, `children` | `value` |
+
+Sa `name?:` kažemo TypeScript-u "možda postoji, možda ne — ne brini ako nedostaje".
+
+---
+
+### Mapa ključnih tipova
+
+```
+InputObject                          ← Jedan element u strukturi
+  ├─ value: InputValue               ← Odakle dolazi vrijednost
+  ├─ validation: InputValidation     ← Pravila (mandatory, min, max)
+  ├─ dependency: DependencyElement[] ← UI zavisnosti (ne procesira se ovdje)
+  ├─ output: DynamicOutput           ← Output entry (metadata)
+  ├─ inputs: InputObject[]           ← Atributi → output.attr
+  ├─ elements: InputObject[]         ← Elementi → output.items
+  └─ children: InputObject[]         ← Specifikacije → output.spec
+
+BuildModelInput                      ← Ulaz u buildModel()
+  ├─ offerId, specId, processId      ← Šta korisnik želi
+  ├─ backendBaseUrl, headers         ← Gdje je backend
+  └─ customerParams                  ← P_CA_ID, P_BA_ID, itd.
+
+BuildModelResult                     ← Izlaz iz buildModel()
+  ├─ model                           ← Popunjen objekat sa vrijednostima
+  ├─ output                          ← Metadata struktura
+  ├─ errors                          ← Lista grešaka
+  └─ structure                       ← Originalna struktura (za debug)
+```
+
+---
+
+### Veza sa ostalim fajlovima
+
+- **value-resolver.ts** koristi `InputObject.value` (`InputValue`) da zna odakle dohvatiti vrijednost
+- **structure-processor.ts** koristi `InputObject.inputs/elements/children` za rekurziju
+- **output-builder.ts** kreira `DynamicOutput` objekte
+- **index.ts** prima `BuildModelInput` i vraća `BuildModelResult`
+
+---
+
+### Zaključak
+
+`types.ts` nije "kod koji radi" — to je "kod koji opisuje". Zamislimo da gradimo kuću:
+
+- **types.ts** = arhitektonski nacrt (gdje će biti vrata, prozori, sobe)
+- **Ostali fajlovi** = radnici koji zapravo grade
+
+Nacrt je bitan jer govori radnicima šta da grade. Ali nacrt sam od sebe ne gradi kuću.
+
+**Praktičan savjet**: NE pokušavaj zapamtiti sva polja odjednom! Ovo je **referentni** fajl — vraćaš se ovdje kad naiđeš na nepoznat tip. Kao telefonski imenik — ne učiš ga napamet, ali kad ti treba broj, otvoriš i pogledaš.
+
+---
+
+## Docker Deployment - Produkcijska postavka
+
+### Problem: Lokalni setup nije prikladan za produkciju
+
+Trenutni `test-run.ts` koristi hardcode-ovane vrijednosti:
+
+```typescript
+const backendBaseUrl = 'http://172.30.80.1:48080';  // ← WSL2 gateway IP - radi samo lokalno!
+const cookie = 'SESSION=2950b4a9-4498-416e-9d62-22e27407d97f';  // ← Manuelno kopirano
+```
+
+**Analogija**: Ovo je kao da u GPS-u upišeš tačnu adresu svog komšije umjesto da spasiš "Kućna adresa". Radi dok si u istoj ulici, ali ako se preseliš u drugi grad — GPS je beskoristan.
+
+Kada `buildModel()` postane Docker servis (mikroservis), potrebna su dva prilagođavanja:
+
+1. **backendBaseUrl** - mora biti dinamički (env variable)
+2. **SESSION cookie** - autentifikacija prema backend-u
+
+---
+
+### Rješenje 1: Environment variable za backend URL
+
+Umjesto hardcoded IP-a, učitaj iz environment varijable:
+
+```typescript
+// test-run.ts ili REST endpoint
+const backendBaseUrl = process.env.BACKEND_BASE_URL || 'http://backend:48080';
+```
+
+U Docker Compose-u:
+
+```yaml
+version: '3.8'
+services:
+  backend:
+    image: uom-backend:latest
+    ports:
+      - "48080:48080"
+    networks:
+      - uom-network
+
+  model-builder:
+    image: model-builder:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_BASE_URL=http://backend:48080  # ← Docker service name kao hostname
+    networks:
+      - uom-network
+
+networks:
+  uom-network:
+    driver: bridge
+```
+
+**Zašto `http://backend:48080`?** Docker Compose kreira internu DNS rezoluciju — service imena postaju hostname-i. Container `model-builder` može direktno zvati `backend` unutar iste mreže.
+
+**Alternativa (vanjski hostname)**: Ako backend nije u istom Docker Compose stack-u:
+
+```yaml
+environment:
+  - BACKEND_BASE_URL=http://192.168.1.100:48080  # ← Fizički IP ili domain
+```
+
+---
+
+### Rješenje 2: SESSION cookie autentifikacija
+
+Tri pristupa:
+
+#### **Pristup A: Proxy (proslijedi korisnikov SESSION)**
+
+Model Builder **NE** koristi vlastitu autentifikaciju. Angular prosljeđuje korisnikov SESSION, a Model Builder ga samo proslijedi backend-u.
+
+**Flow**:
+```
+Angular UI → POST /api/buildModel + Cookie: SESSION=abc123
+  ↓
+Model Builder REST endpoint → čita SESSION iz request headers
+  ↓
+buildModel({ headers: { Cookie: request.headers.cookie } })
+  ↓
+HttpClient → svi pozivi prema backend-u uključuju taj SESSION
+```
+
+**Express.js endpoint primjer**:
+
+```typescript
+import express from 'express';
+import { buildModel } from './lib/model-builder';
+
+const app = express();
+app.use(express.json());
+
+app.post('/api/buildModel', async (req, res) => {
+  try {
+    // Proslijedi korisnikov SESSION cookie
+    const result = await buildModel({
+      offerId: req.body.offerId,
+      specId: req.body.specId,
+      processId: req.body.processId,
+      backendBaseUrl: process.env.BACKEND_BASE_URL,
+      headers: {
+        Cookie: req.headers.cookie || '',  // ← Proslijedi cookie kao što je stigao
+      },
+      customerParams: req.body.customerParams,
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(3000, () => console.log('Model Builder running on port 3000'));
+```
+
+**Prednosti**:
+- ✅ Najjednostavnije — bez dodatne autentifikacije
+- ✅ Koristi iste permisije kao korisnik (security)
+- ✅ Audit trail — svaki API poziv zabilježen pod korisnikovim SESSION-om
+
+**Mane**:
+- ❌ Zahtijeva da korisnik ima validan SESSION (ne može se koristiti za batch poslove)
+
+**Docker Compose** (isti kao prije, bez promjena).
+
+---
+
+#### **Pristup B: Service Account (Model Builder ima svoj SESSION)**
+
+Model Builder se loguje na backend sa **service account** kredencijalima i održava vlastiti SESSION.
+
+**Flow**:
+```
+Model Builder startup → POST /login sa service account username/password
+  ↓
+Backend vraća SESSION cookie
+  ↓
+Model Builder sprema SESSION u memoriju
+  ↓
+buildModel({ headers: { Cookie: serviceAccountSession } })
+```
+
+**Express.js primjer**:
+
+```typescript
+let serviceSession = '';
+
+// Funkcija za login (poziva se na startup ili kad SESSION expire-a)
+async function loginAsServiceAccount() {
+  const response = await fetch(process.env.BACKEND_BASE_URL + '/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: process.env.SERVICE_ACCOUNT_USER,  // "model-builder-service"
+      password: process.env.SERVICE_ACCOUNT_PASS,  // "SecurePassword123"
+    }),
+  });
+
+  // Izvuci SESSION iz Set-Cookie header-a
+  const setCookie = response.headers.get('set-cookie');
+  const match = setCookie?.match(/SESSION=([^;]+)/);
+  if (match) {
+    serviceSession = 'SESSION=' + match[1];
+    console.log('Service account logged in:', serviceSession.substring(0, 20) + '...');
+  }
+}
+
+// Login na startup
+loginAsServiceAccount();
+
+// Relogin svaka 2 sata (ako SESSION traje 2h)
+setInterval(loginAsServiceAccount, 2 * 60 * 60 * 1000);
+
+app.post('/api/buildModel', async (req, res) => {
+  const result = await buildModel({
+    ...req.body,
+    backendBaseUrl: process.env.BACKEND_BASE_URL,
+    headers: {
+      Cookie: serviceSession,  // ← Koristi service account SESSION
+    },
+  });
+
+  res.json(result);
+});
+```
+
+**Docker Compose**:
+
+```yaml
+model-builder:
+  environment:
+    - BACKEND_BASE_URL=http://backend:48080
+    - SERVICE_ACCOUNT_USER=model-builder-service  # ← Novi env vars
+    - SERVICE_ACCOUNT_PASS=SecurePassword123
+```
+
+**Prednosti**:
+- ✅ Radi i bez korisnikovog SESSION-a (batch poslovi, CRON jobovi)
+- ✅ Jedan SESSION za sve pozive (manje load na backend auth)
+
+**Mane**:
+- ❌ Audit trail ne pokazuje ko je STVARNI korisnik
+- ❌ Svi pozivi imaju iste permisije (service account mora imati široke permisije)
+- ❌ SESSION rotation logika (refresh kad expire-a)
+
+---
+
+#### **Pristup C: Hybrid (pokušaj korisnikov SESSION, fallback na service account)**
+
+```typescript
+app.post('/api/buildModel', async (req, res) => {
+  let cookie = req.headers.cookie;  // Probaj korisnikov SESSION
+
+  if (!cookie || cookie === '') {
+    // Fallback: koristi service account SESSION
+    cookie = serviceSession;
+  }
+
+  const result = await buildModel({
+    ...req.body,
+    backendBaseUrl: process.env.BACKEND_BASE_URL,
+    headers: { Cookie: cookie },
+  });
+
+  res.json(result);
+});
+```
+
+**Kada koristiti**:
+- Angular poziv → proslijedi korisnikov SESSION
+- CRON job / interno → koristi service account SESSION
+
+---
+
+### Preporuka: Počni sa Pristupom A (Proxy)
+
+Za **prvu verziju**, koristi **Pristup A** (Proxy):
+- Najjednostavniji (bez dodatne logike)
+- Security best practice (korisnik može vidjeti samo svoje podatke)
+- Lako testirati (kopiraj SESSION iz browser-a)
+
+**Kasnije**, ako treba batch processing ili CRON jobovi, dodaj **Pristup C** (Hybrid).
+
+---
+
+### Kompletan Docker Compose primjer (Pristup A)
+
+```yaml
+version: '3.8'
+
+services:
+  backend:
+    image: uom-backend:latest
+    ports:
+      - "48080:48080"
+    networks:
+      - uom-network
+
+  model-builder:
+    build: ./model-builder
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_BASE_URL=http://backend:48080
+      - NODE_ENV=production
+    networks:
+      - uom-network
+    depends_on:
+      - backend
+
+  angular-ui:
+    image: nginx:alpine
+    volumes:
+      - ./dist:/usr/share/nginx/html
+    ports:
+      - "80:80"
+    networks:
+      - uom-network
+
+networks:
+  uom-network:
+    driver: bridge
+```
+
+**Angular servis** (kako poziva Model Builder):
+
+```typescript
+// model-builder.service.ts
+buildModel(offerId: string, specId: string, processId: string, customerParams: any) {
+  // Angular automatski šalje cookie-je sa withCredentials: true
+  return this.http.post('http://localhost:3000/api/buildModel', {
+    offerId,
+    specId,
+    processId,
+    customerParams
+  }, { withCredentials: true });  // ← Ovo šalje SESSION cookie
+}
+```
+
+---
+
+### Testiranje Docker setup-a
+
+```bash
+# Build image
+cd model-builder
+docker build -t model-builder:latest .
+
+# Pokreni Docker Compose
+docker-compose up -d
+
+# Testiraj sa curl-om (proslijedi SESSION)
+curl -X POST http://localhost:3000/api/buildModel \
+  -H "Content-Type: application/json" \
+  -H "Cookie: SESSION=2950b4a9-4498-416e-9d62-22e27407d97f" \
+  -d '{
+    "offerId": "5919",
+    "specId": "979",
+    "processId": "10",
+    "customerParams": {
+      "P_CA_ID": "130025794",
+      "P_BA_ID": "330021716"
+    }
+  }'
+```
+
+---
+
+### Analogija: Restoran dostave
+
+- **Pristup A (Proxy)**: Korisnik zove restoran sa svojim brojem telefona. Dostavljač vidi "narudžba za Kenana". Restoran zna ko je naručio i vodi statistiku.
+- **Pristup B (Service Account)**: Korisnik zove aplikaciju. Aplikacija zove restoran sa SVOJIM brojem. Restoran vidi samo "narudžba od aplikacije X" — ne zna ko je stvarni korisnik.
+- **Pristup C (Hybrid)**: Ako korisnik zove direktno, koristi svoj broj. Ako aplikacija radi automatsku narudžbu (npr. pretplata), koristi svoj broj.
+
+**Za jelo koje korisnik naručio (real-time)** → koristi korisnički broj (Proxy)
+**Za automatske narudžbe (CRON)** → koristi aplikacijski broj (Service Account)
