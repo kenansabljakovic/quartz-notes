@@ -2,7 +2,7 @@
 
 ## Kontekst
 
-Self-hosted Git server na homelabу sa automatskim CI/CD deploymentom. Push koda na `main` → automatski build i deploy Docker kontejnera na istom serveru.
+Self-hosted Git server na homelab računaru sa automatskim CI/CD deploymentom. Push koda na `main` → automatski build i deploy Docker kontejnera na istom serveru.
 
 **Server:** `keonsrv`, `192.168.1.200`, Ubuntu, 6 CPU, 7.5GB RAM
 **Već zauzeti portovi:** 3000 (Grafana), 8086 (InfluxDB), itd.
@@ -362,3 +362,29 @@ Secret nije stigao do kontejnera. Provjeri:
 docker inspect wear-app --format='{{range .Config.Env}}{{println .}}{{end}}' | grep NEXTAUTH
 ```
 Ako je prazan — secret nije dodan u Forgejo ili je pogrešno imenovan.
+
+---
+
+## 11. Push Mirror na GitHub
+
+Automatski push kod na GitHub nakon svakog pusha na Forgejo.
+
+**Setup:**
+
+1. Idi na Forgejo repo → **Settings** → **Mirror Settings**
+2. Klikni **Add Push Mirror**
+3. Popuni:
+   - **Remote URL:** `https://github.com/keon/wear-app.git`
+   - **Authorization:** GitHub username + Personal Access Token
+   - **Sync when commits are pushed:** ✓ checked
+
+**Kako dobiti GitHub Personal Access Token:**
+
+1. GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+2. **Generate new token**
+3. Scope: `repo` (full control of private repositories)
+4. Kopiraj token i koristi kao password u Mirror Settings
+
+Nakon toga, svaki push na Forgejo automatski se zrcali na GitHub.
+
+**Napomena:** GitHub Personal Access Token je kao password — čuva se kao secret u Forgejo, ne prikazuje se u UI.
