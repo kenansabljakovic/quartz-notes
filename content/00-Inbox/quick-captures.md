@@ -1,2 +1,5 @@
 - Pencil.dev - check this out
 - Claude & Home assistant - https://community.home-assistant.io/t/ai-guided-home-assistant-setup-automation-templates-mobile-first-react-dashboard-with-claude-code-skills-for-configuration-management/999867
+
+
+- pogledati conducter.build, soloterm.com, getpolyscope.com, https://superset.sh/
